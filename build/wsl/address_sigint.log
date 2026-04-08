@@ -1,0 +1,11 @@
+[+] Algorithm: address
+[+] Target source: Puzzles/71.txt
+[+] Valid targets: 1 | warnings: 0
+[+] Hardware: logical=4 physical=2 RAM=3.7 BB
+[+] Auto-tune: profile=balanced threads=2 batch=1024
+[+] Range start: 0000000000000000000000000000000000000000000000400000000000000000
+[+] Range end:   00000000000000000000000000000000000000000000007fffffffffffffffff
+[i] Backend portatil de referencia usando 1 thread efetiva nesta fase.
+[+] Checkpoint inicial salvo em build/wsl/address_sigint.ckp
+[!] Interrupcao detectada (Ctrl+C)
+[+] Checkpoint de emergencia salvo em build/wsl/address_sigint.ckp

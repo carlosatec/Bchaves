@@ -7,15 +7,16 @@ Base inicial da reescrita do projeto com foco em compatibilidade Linux/Windows.
 - Binários `address`, `bsgs` e `kangaroo`.
 - Parsing e validação de alvos Bitcoin base58/public key.
 - Leitura dos arquivos reais em `Puzzles/` e suporte a alvo inline quando aplicável.
-- Backend portátil de referência para secp256k1 no modo `address`, sem dependência externa obrigatória.
-- Checkpoint binário portátil com CRC32.
+- Backend portátil de referência para secp256k1, sem dependência externa obrigatória.
+- Backends de referência funcionais para `address`, `bsgs` e `kangaroo`.
+- Checkpoint binário portátil com CRC32, auto-save, resume e save de emergência em `Ctrl+C`.
 - Auto-tuning inicial e detecção básica de hardware.
 - Saída padronizada para progresso e métricas.
 
 ## O que ainda falta
 - Backend otimizado com `libsecp256k1` e GLV/wNAF.
 - Hot path otimizado com batching e multithreading real.
-- Implementação completa dos algoritmos BSGS e Kangaroo.
+- Implementação algorítmica otimizada de verdade para BSGS e Kangaroo.
 
 ## Build
 ```bash
@@ -108,8 +109,8 @@ Observações para Windows:
 ```bash
 ./address Puzzles/1.txt -R sequential -l both
 ./address Puzzles/71.txt -R sequential -l compress --start 0x400000000000000000 --end 0x7fffffffffffffffff --limit 100000
-./bsgs Puzzles/71.txt -b 40 -k 2048
-./kangaroo Puzzles/135.txt -r 0:FFFFFFFFFFFFFFFF
+./bsgs Puzzles/1.txt -b 20 -k 2048
+./kangaroo Puzzles/1.txt -r 0:FFFFFFFF
 ./kangaroo 02145d2611c823a396ef6712ce0f712f09b9b4f3135e3e0aa3230fb9b6d08d1e16 -r 0:FFFFFFFF
 ```
 
@@ -117,6 +118,11 @@ Notas do modo `address`:
 - Se o alvo estiver em `Puzzles/<n>.txt`, o range padrão é inferido do número do puzzle.
 - Também é possível definir o range explicitamente com `--start` e `--end`.
 - `--limit` ajuda a testar ranges grandes com o backend portátil atual.
+
+Notas dos modos `bsgs` e `kangaroo`:
+- Nesta base, ambos usam backend portátil de referência para busca funcional e integração.
+- O fluxo de `checkpoint`, `resume` via `QCHVES_RESUME=1` e `Ctrl+C` já funciona nesses modos.
+- Eles ainda não usam as otimizações esperadas no plano original, então servem como base correta e portável, não como implementação final de performance.
 
 ## Observações de portabilidade
 - `-march=native` fica desabilitado por padrão para preservar portabilidade binária.

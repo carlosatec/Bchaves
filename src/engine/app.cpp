@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -25,10 +26,41 @@ namespace {
 using qchaves::system::CheckpointState;
 using qchaves::core::BigInt;
 
+volatile std::sig_atomic_t g_interrupt_requested = 0;
+
 struct SearchRange {
     BigInt start{};
     BigInt end{};
     std::optional<std::uint32_t> puzzle_bits;
+};
+
+struct ResumeState {
+    bool active = false;
+    CheckpointState checkpoint{};
+};
+
+void checkpoint_bigint(const BigInt& value, std::array<std::uint8_t, 32>& out);
+BigInt checkpoint_to_bigint(const std::array<std::uint8_t, 32>& bytes);
+
+void handle_interrupt_signal(int) {
+    g_interrupt_requested = 1;
+}
+
+class ScopedInterruptHandler {
+public:
+    ScopedInterruptHandler() {
+        g_interrupt_requested = 0;
+        previous_sigint_ = std::signal(SIGINT, handle_interrupt_signal);
+    }
+
+    ~ScopedInterruptHandler() {
+        std::signal(SIGINT, previous_sigint_);
+        g_interrupt_requested = 0;
+    }
+
+private:
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_sigint_ = SIG_DFL;
 };
 
 CheckpointState build_checkpoint(const std::string& algorithm,
@@ -90,17 +122,21 @@ bool should_resume() {
     return env != nullptr && std::string(env) == "1";
 }
 
-void try_resume(const std::filesystem::path& checkpoint_path) {
+ResumeState load_resume_state(const std::filesystem::path& checkpoint_path) {
+    ResumeState result;
     if (!std::filesystem::exists(checkpoint_path) || !should_resume()) {
-        return;
+        return result;
     }
-    qchaves::system::CheckpointState state;
+
     std::string error;
-    if (qchaves::system::load_checkpoint(checkpoint_path, state, error)) {
-        std::cout << "[+] Resume automatico: checkpoint carregado de " << checkpoint_path.string() << '\n';
-    } else {
+    if (!qchaves::system::load_checkpoint(checkpoint_path, result.checkpoint, error)) {
         std::cout << "[E] Checkpoint encontrado, mas invalido: " << error << '\n';
+        return result;
     }
+
+    result.active = true;
+    std::cout << "[+] Resume automatico: checkpoint carregado de " << checkpoint_path.string() << '\n';
+    return result;
 }
 
 bool to_u64_if_fits(const BigInt& value, std::uint64_t& out) {
@@ -161,6 +197,133 @@ bool resolve_address_range(const qchaves::system::AddressOptions& options, Searc
         range.end = max_key;
     }
     return true;
+}
+
+bool resolve_bsgs_range(const qchaves::system::BsgsOptions& options, SearchRange& range, std::string& error) {
+    if (options.bits < 1 || options.bits > 256) {
+        error = "bit range invalido";
+        return false;
+    }
+
+    range.puzzle_bits = options.bits;
+    if (options.bits == 1) {
+        range.start = 1;
+        range.end = 1;
+    } else {
+        range.start = BigInt(1) << (options.bits - 1u);
+        range.end = (BigInt(1) << options.bits) - 1;
+    }
+
+    const BigInt max_key = qchaves::core::secp256k1_curve_order() - 1;
+    if (range.end > max_key) {
+        range.end = max_key;
+    }
+    return true;
+}
+
+bool parse_range_expression(const std::string& text, SearchRange& range, std::string& error) {
+    const std::size_t separator = text.find(':');
+    if (separator == std::string::npos) {
+        error = "range invalido: use <start:end>";
+        return false;
+    }
+
+    const std::string start_text = text.substr(0, separator);
+    const std::string end_text = text.substr(separator + 1);
+    if (start_text.empty() || end_text.empty()) {
+        error = "range invalido: use <start:end>";
+        return false;
+    }
+    if (!qchaves::core::parse_big_int(start_text, range.start) ||
+        !qchaves::core::parse_big_int(end_text, range.end)) {
+        error = "range invalido: use valores hex ou decimal";
+        return false;
+    }
+    if (range.end < range.start) {
+        error = "range invalido: fim menor que inicio";
+        return false;
+    }
+
+    const BigInt max_key = qchaves::core::secp256k1_curve_order() - 1;
+    if (range.start > max_key) {
+        error = "range invalido: inicio excede a ordem da curva secp256k1";
+        return false;
+    }
+    if (range.end > max_key) {
+        range.end = max_key;
+    }
+    return true;
+}
+
+bool apply_resume_for_range(const std::string& algorithm,
+                            qchaves::system::SearchMode mode,
+                            qchaves::system::SearchType type,
+                            const ResumeState& resume,
+                            const SearchRange& original_range,
+                            SearchRange& active_range,
+                            CheckpointState& checkpoint,
+                            bool& resume_completed) {
+    if (!resume.active || resume.checkpoint.algorithm != algorithm) {
+        return false;
+    }
+
+    const BigInt resume_start = checkpoint_to_bigint(resume.checkpoint.range_start);
+    const BigInt resume_end = checkpoint_to_bigint(resume.checkpoint.range_end);
+    const BigInt resume_current = checkpoint_to_bigint(resume.checkpoint.current);
+    if (resume.checkpoint.mode != mode ||
+        resume.checkpoint.type != type ||
+        resume_start != original_range.start ||
+        resume_end != original_range.end) {
+        std::cout << "[i] Checkpoint encontrado, mas nao compativel com a execucao atual" << '\n';
+        return false;
+    }
+
+    checkpoint = resume.checkpoint;
+
+    if (mode == qchaves::system::SearchMode::sequential) {
+        if (resume_current < original_range.end) {
+            active_range.start = resume_current + BigInt(1);
+            checkpoint_bigint(active_range.start, checkpoint.current);
+            std::cout << "[+] Resume aplicado: proxima chave "
+                      << qchaves::core::bigint_to_hex(active_range.start) << '\n';
+            return true;
+        }
+        std::cout << "[+] Resume indica range ja concluido" << '\n';
+        resume_completed = true;
+        return true;
+    }
+
+    if (mode == qchaves::system::SearchMode::backward) {
+        if (resume_current > original_range.start) {
+            active_range.end = resume_current - BigInt(1);
+            checkpoint_bigint(active_range.end, checkpoint.current);
+            std::cout << "[+] Resume aplicado: proxima chave "
+                      << qchaves::core::bigint_to_hex(active_range.end) << '\n';
+            return true;
+        }
+        std::cout << "[+] Resume indica range ja concluido" << '\n';
+        resume_completed = true;
+        return true;
+    }
+
+    std::cout << "[i] Resume automatico ainda nao e aplicado para modo "
+              << qchaves::system::to_string(mode) << '\n';
+    return true;
+}
+
+std::uint64_t estimate_processed_offset(qchaves::system::SearchMode mode,
+                                        const SearchRange& original_range,
+                                        const SearchRange& active_range) {
+    std::uint64_t processed = 0;
+    if (mode == qchaves::system::SearchMode::sequential &&
+        to_u64_if_fits(active_range.start - original_range.start, processed)) {
+        return processed;
+    }
+    if (mode == qchaves::system::SearchMode::backward &&
+        to_u64_if_fits(original_range.end - active_range.end, processed)) {
+        return processed;
+    }
+    return 0;
 }
 
 bool type_allows_compressed(qchaves::system::SearchType type) {
@@ -236,13 +399,54 @@ void checkpoint_bigint(const BigInt& value, std::array<std::uint8_t, 32>& out) {
     }
 }
 
+BigInt checkpoint_to_bigint(const std::array<std::uint8_t, 32>& bytes) {
+    BigInt value;
+    for (const std::uint8_t byte : bytes) {
+        value = value << 8u;
+        value += BigInt(byte);
+    }
+    return value;
+}
+
 bool persist_checkpoint(const std::filesystem::path& checkpoint_path,
                         const CheckpointState& checkpoint,
                         std::string& error) {
     return qchaves::system::save_checkpoint(checkpoint_path, checkpoint, error);
 }
 
-void append_found_record(const std::filesystem::path& target_source,
+bool interrupt_requested() {
+    return g_interrupt_requested != 0;
+}
+
+void update_checkpoint_current(CheckpointState& checkpoint, const BigInt& current) {
+    checkpoint.timestamp = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    checkpoint_bigint(current, checkpoint.current);
+}
+
+int finalize_interrupted_run(const qchaves::system::CommonOptions& options,
+                             const std::filesystem::path& checkpoint_path,
+                             CheckpointState& checkpoint,
+                             const BigInt& last_processed) {
+    std::cout << "[!] Interrupcao detectada (Ctrl+C)" << '\n';
+    if (!options.checkpoint_enabled) {
+        std::cout << "[i] Checkpoint desabilitado; estado atual nao sera salvo" << '\n';
+        return 130;
+    }
+
+    update_checkpoint_current(checkpoint, last_processed);
+    std::string checkpoint_error;
+    if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+        std::cerr << "[E] Falha ao salvar checkpoint de emergencia: " << checkpoint_error << '\n';
+        return 1;
+    }
+
+    std::cout << "[+] Checkpoint de emergencia salvo em " << checkpoint_path.string() << '\n';
+    return 130;
+}
+
+void append_found_record(const std::string& algorithm,
+                         const std::filesystem::path& target_source,
                          const qchaves::system::SearchType type,
                          const qchaves::core::DerivedKeyInfo& key_info,
                          std::uint32_t thread_id,
@@ -272,14 +476,15 @@ void append_found_record(const std::filesystem::path& target_source,
     out << "PublicKeyUncompressed=" << key_info.pubkey_uncompressed_hex << '\n';
     out << "AddressCompressed=" << key_info.address_compressed << '\n';
     out << "AddressUncompressed=" << key_info.address_uncompressed << '\n';
-    out << "Mode=address\n";
+    out << "Mode=" << algorithm << '\n';
     out << "Type=" << qchaves::system::to_string(type) << '\n';
     out << "Thread=" << thread_id << '\n';
     out << "Timestamp=" << timestamp_iso << '\n';
     out << "Elapsed=" << qchaves::system::format_duration(seconds) << "\n\n";
 }
 
-void print_found(const std::filesystem::path& target_source,
+void print_found(const std::string& algorithm,
+                 const std::filesystem::path& target_source,
                  const qchaves::system::SearchType type,
                  const qchaves::core::DerivedKeyInfo& key_info,
                  std::uint32_t thread_id,
@@ -300,7 +505,7 @@ void print_found(const std::filesystem::path& target_source,
     std::cout << "    Public Key Uncompressed: " << key_info.pubkey_uncompressed_hex << '\n';
     std::cout << "    Address Compressed: " << key_info.address_compressed << '\n';
     std::cout << "    Address Uncompressed: " << key_info.address_uncompressed << '\n';
-    std::cout << "    Mode: Address | " << qchaves::system::to_string(type) << '\n';
+    std::cout << "    Mode: " << algorithm << " | " << qchaves::system::to_string(type) << '\n';
     std::cout << "    Thread: " << thread_id << '\n';
     std::cout << "    Time: " << qchaves::system::format_duration(seconds) << '\n';
 }
@@ -350,9 +555,45 @@ void print_address_stats(qchaves::system::SearchMode mode,
     }
 }
 
+void print_bsgs_stats(std::uint64_t processed,
+                      const std::chrono::steady_clock::duration& elapsed,
+                      const SearchRange& range) {
+    const auto seconds = std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()));
+    const double rate = static_cast<double>(processed) / static_cast<double>(seconds);
+    std::uint64_t width = 0;
+    if (to_u64_if_fits(range.end - range.start + 1, width) && width > 0) {
+        const double ratio = std::min(1.0, static_cast<double>(processed) / static_cast<double>(width));
+        std::string eta_text;
+        if (processed > 0 && ratio < 1.0 && rate > 0.0) {
+            const double remaining = static_cast<double>(width - processed) / rate;
+            eta_text = " | ETA: " + qchaves::system::format_duration(static_cast<std::uint64_t>(remaining));
+        }
+        std::cout << qchaves::system::make_progress_bar(ratio)
+                  << ' ' << static_cast<int>(ratio * 100.0)
+                  << "% | Table: 100% | Keys: " << qchaves::system::format_key_count(static_cast<double>(processed))
+                  << " | Rate: " << qchaves::system::format_rate(rate)
+                  << eta_text << '\n';
+        return;
+    }
+
+    std::cout << "[+] Table: 100% | Keys: " << qchaves::system::format_key_count(static_cast<double>(processed))
+              << " | Rate: " << qchaves::system::format_rate(rate)
+              << " | Time: " << qchaves::system::format_duration(seconds) << '\n';
+}
+
+void print_kangaroo_stats(std::uint64_t processed,
+                          const std::chrono::steady_clock::duration& elapsed) {
+    const auto seconds = std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()));
+    const double rate = static_cast<double>(processed) / static_cast<double>(seconds);
+    std::cout << "[Hops: " << qchaves::system::format_key_count(static_cast<double>(processed))
+              << " | Dist: 0 | Rate: " << qchaves::system::format_rate(rate)
+              << " | Time: " << qchaves::system::format_duration(seconds) << "]\n";
+}
+
 }  // namespace
 
 int run_address(const qchaves::system::AddressOptions& options) {
+    ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, false);
     print_warnings(targets);
     if (targets.entries.empty()) {
@@ -380,13 +621,20 @@ int run_address(const qchaves::system::AddressOptions& options) {
     }
 
     const auto checkpoint_path = options.checkpoint_path.value_or(qchaves::system::default_checkpoint_path("address", range.puzzle_bits));
-    try_resume(checkpoint_path);
+    const auto resume = load_resume_state(checkpoint_path);
     auto checkpoint = build_checkpoint("address", options.mode, options.type, tune);
+    bool resume_completed = false;
+    const SearchRange original_range = range;
     checkpoint_bigint(range.start, checkpoint.range_start);
     checkpoint_bigint(range.end, checkpoint.range_end);
     checkpoint_bigint(range.start, checkpoint.current);
+    apply_resume_for_range("address", options.mode, options.type, resume, original_range, range, checkpoint, resume_completed);
     if (const int checkpoint_status = finalize_checkpoint(options, checkpoint_path, checkpoint); checkpoint_status != 0) {
         return checkpoint_status;
+    }
+    if (resume_completed) {
+        std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
+        return 0;
     }
 
     std::mt19937_64 rng(std::random_device{}());
@@ -394,14 +642,17 @@ int run_address(const qchaves::system::AddressOptions& options) {
     BigInt backward = range.end;
     BigInt last_processed = range.start;
     bool use_forward = true;
-    std::uint64_t processed = 0;
-    std::uint64_t processed_forward = 0;
-    std::uint64_t processed_backward = 0;
+    std::uint64_t processed = estimate_processed_offset(options.mode, original_range, range);
+    std::uint64_t processed_forward = options.mode == qchaves::system::SearchMode::backward ? 0 : processed;
+    std::uint64_t processed_backward = options.mode == qchaves::system::SearchMode::backward ? processed : 0;
     const auto started = std::chrono::steady_clock::now();
     auto last_stats = started;
     auto last_checkpoint = started;
 
     while (true) {
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
         if (options.limit > 0 && processed >= options.limit) {
             break;
         }
@@ -459,22 +710,25 @@ int run_address(const qchaves::system::AddressOptions& options) {
                 continue;
             }
             const auto elapsed = std::chrono::steady_clock::now() - started;
-            checkpoint_bigint(last_processed, checkpoint.current);
+            update_checkpoint_current(checkpoint, last_processed);
             std::string checkpoint_error;
             if (options.checkpoint_enabled &&
                 !persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
                 std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
                 return 1;
             }
-            print_found(options.target_path, options.type, key_info, 1u, elapsed);
-            append_found_record(options.target_path, options.type, key_info, 1u, elapsed);
+            print_found("address", options.target_path, options.type, key_info, 1u, elapsed);
+            append_found_record("address", options.target_path, options.type, key_info, 1u, elapsed);
             return 0;
         }
 
         const auto now = std::chrono::steady_clock::now();
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
         if (options.checkpoint_enabled &&
             now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
-            checkpoint_bigint(last_processed, checkpoint.current);
+            update_checkpoint_current(checkpoint, last_processed);
             std::string checkpoint_error;
             if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
                 std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
@@ -483,13 +737,13 @@ int run_address(const qchaves::system::AddressOptions& options) {
             last_checkpoint = now;
         }
         if (now - last_stats >= std::chrono::seconds(30)) {
-            print_address_stats(options.mode, processed, processed_forward, processed_backward, now - started, range);
+            print_address_stats(options.mode, processed, processed_forward, processed_backward, now - started, original_range);
             last_stats = now;
         }
     }
 
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    checkpoint_bigint(last_processed, checkpoint.current);
+    update_checkpoint_current(checkpoint, last_processed);
     if (options.checkpoint_enabled) {
         std::string checkpoint_error;
         if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
@@ -497,12 +751,13 @@ int run_address(const qchaves::system::AddressOptions& options) {
             return 1;
         }
     }
-    print_address_stats(options.mode, processed, processed_forward, processed_backward, elapsed, range);
+    print_address_stats(options.mode, processed, processed_forward, processed_backward, elapsed, original_range);
     std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
     return 0;
 }
 
 int run_bsgs(const qchaves::system::BsgsOptions& options) {
+    ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, true);
     print_warnings(targets);
     if (targets.entries.empty()) {
@@ -515,18 +770,117 @@ int run_bsgs(const qchaves::system::BsgsOptions& options) {
     print_bootstrap("bsgs", options, targets, hardware, tune);
     std::cout << "[+] Table preset (-k): " << tune.table_k << " | bit range: " << options.bits << '\n';
 
+    SearchRange range;
+    std::string range_error;
+    if (!resolve_bsgs_range(options, range, range_error)) {
+        std::cerr << "[E] " << range_error << '\n';
+        return 1;
+    }
+    std::cout << "[+] Range start: " << qchaves::core::bigint_to_hex(range.start) << '\n';
+    std::cout << "[+] Range end:   " << qchaves::core::bigint_to_hex(range.end) << '\n';
+    if (tune.threads > 1) {
+        std::cout << "[i] Backend BSGS de referencia usando 1 thread efetiva nesta fase." << '\n';
+    }
+
     const auto checkpoint_path = options.checkpoint_path.value_or(qchaves::system::default_checkpoint_path("bsgs", options.bits));
-    try_resume(checkpoint_path);
-    const auto checkpoint = build_checkpoint("bsgs", qchaves::system::SearchMode::sequential, options.type, tune);
+    const auto resume = load_resume_state(checkpoint_path);
+    auto checkpoint = build_checkpoint("bsgs", qchaves::system::SearchMode::sequential, options.type, tune);
+    bool resume_completed = false;
+    const SearchRange original_range = range;
+    checkpoint_bigint(range.start, checkpoint.range_start);
+    checkpoint_bigint(range.end, checkpoint.range_end);
+    checkpoint_bigint(range.start, checkpoint.current);
+    apply_resume_for_range("bsgs",
+                           qchaves::system::SearchMode::sequential,
+                           options.type,
+                           resume,
+                           original_range,
+                           range,
+                           checkpoint,
+                           resume_completed);
     if (const int checkpoint_status = finalize_checkpoint(options, checkpoint_path, checkpoint); checkpoint_status != 0) {
         return checkpoint_status;
     }
+    if (resume_completed) {
+        std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
+        return 0;
+    }
 
-    std::cout << "[+] Base BSGS pronta para receber tabela, filtros e giant steps reais" << '\n';
+    BigInt current = range.start;
+    BigInt last_processed = range.start;
+    std::uint64_t processed = estimate_processed_offset(qchaves::system::SearchMode::sequential, original_range, range);
+    const auto started = std::chrono::steady_clock::now();
+    auto last_stats = started;
+    auto last_checkpoint = started;
+
+    while (current <= range.end) {
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
+
+        qchaves::core::DerivedKeyInfo key_info;
+        if (!qchaves::core::derive_key_info(current, key_info)) {
+            std::cerr << "[E] Chave privada invalida no range atual" << '\n';
+            return 1;
+        }
+
+        last_processed = current;
+        ++processed;
+        for (const auto& target : targets.entries) {
+            if (!target_matches(target, options.type, key_info)) {
+                continue;
+            }
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            update_checkpoint_current(checkpoint, last_processed);
+            std::string checkpoint_error;
+            if (options.checkpoint_enabled &&
+                !persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+            print_found("bsgs", options.target_path, options.type, key_info, 1u, elapsed);
+            append_found_record("bsgs", options.target_path, options.type, key_info, 1u, elapsed);
+            return 0;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
+        if (options.checkpoint_enabled &&
+            now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
+            update_checkpoint_current(checkpoint, last_processed);
+            std::string checkpoint_error;
+            if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+            last_checkpoint = now;
+        }
+        if (now - last_stats >= std::chrono::seconds(30)) {
+            print_bsgs_stats(processed, now - started, original_range);
+            last_stats = now;
+        }
+
+        ++current;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    update_checkpoint_current(checkpoint, last_processed);
+    if (options.checkpoint_enabled) {
+        std::string checkpoint_error;
+        if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+            std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+            return 1;
+        }
+    }
+    print_bsgs_stats(processed, elapsed, original_range);
+    std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
     return 0;
 }
 
 int run_kangaroo(const qchaves::system::KangarooOptions& options) {
+    ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, true);
     print_warnings(targets);
     if (targets.entries.empty()) {
@@ -537,16 +891,113 @@ int run_kangaroo(const qchaves::system::KangarooOptions& options) {
     const auto hardware = qchaves::system::detect_hardware();
     const auto tune = qchaves::system::tune_for(hardware, options.auto_tune, options.threads);
     print_bootstrap("kangaroo", options, targets, hardware, tune);
-    std::cout << "[+] Range: " << options.range << '\n';
+
+    SearchRange range;
+    std::string range_error;
+    if (!parse_range_expression(options.range, range, range_error)) {
+        std::cerr << "[E] " << range_error << '\n';
+        return 1;
+    }
+    std::cout << "[+] Range start: " << qchaves::core::bigint_to_hex(range.start) << '\n';
+    std::cout << "[+] Range end:   " << qchaves::core::bigint_to_hex(range.end) << '\n';
+    if (tune.threads > 1) {
+        std::cout << "[i] Backend Kangaroo de referencia usando 1 thread efetiva nesta fase." << '\n';
+    }
 
     const auto checkpoint_path = options.checkpoint_path.value_or(qchaves::system::default_checkpoint_path("kangaroo"));
-    try_resume(checkpoint_path);
-    const auto checkpoint = build_checkpoint("kangaroo", qchaves::system::SearchMode::random, qchaves::system::SearchType::both, tune);
+    const auto resume = load_resume_state(checkpoint_path);
+    auto checkpoint = build_checkpoint("kangaroo", qchaves::system::SearchMode::sequential, qchaves::system::SearchType::both, tune);
+    bool resume_completed = false;
+    const SearchRange original_range = range;
+    checkpoint_bigint(range.start, checkpoint.range_start);
+    checkpoint_bigint(range.end, checkpoint.range_end);
+    checkpoint_bigint(range.start, checkpoint.current);
+    apply_resume_for_range("kangaroo",
+                           qchaves::system::SearchMode::sequential,
+                           qchaves::system::SearchType::both,
+                           resume,
+                           original_range,
+                           range,
+                           checkpoint,
+                           resume_completed);
     if (const int checkpoint_status = finalize_checkpoint(options, checkpoint_path, checkpoint); checkpoint_status != 0) {
         return checkpoint_status;
     }
+    if (resume_completed) {
+        std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
+        return 0;
+    }
 
-    std::cout << "[+] Base Kangaroo pronta para integrar jumps, traps e distinguished points" << '\n';
+    BigInt current = range.start;
+    BigInt last_processed = range.start;
+    std::uint64_t processed = estimate_processed_offset(qchaves::system::SearchMode::sequential, original_range, range);
+    const auto started = std::chrono::steady_clock::now();
+    auto last_stats = started;
+    auto last_checkpoint = started;
+
+    while (current <= range.end) {
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
+
+        qchaves::core::DerivedKeyInfo key_info;
+        if (!qchaves::core::derive_key_info(current, key_info)) {
+            std::cerr << "[E] Chave privada invalida no range atual" << '\n';
+            return 1;
+        }
+
+        last_processed = current;
+        ++processed;
+        for (const auto& target : targets.entries) {
+            if (!target_matches(target, qchaves::system::SearchType::both, key_info)) {
+                continue;
+            }
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            update_checkpoint_current(checkpoint, last_processed);
+            std::string checkpoint_error;
+            if (options.checkpoint_enabled &&
+                !persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+            print_found("kangaroo", options.target_path, qchaves::system::SearchType::both, key_info, 1u, elapsed);
+            append_found_record("kangaroo", options.target_path, qchaves::system::SearchType::both, key_info, 1u, elapsed);
+            return 0;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (interrupt_requested()) {
+            return finalize_interrupted_run(options, checkpoint_path, checkpoint, last_processed);
+        }
+        if (options.checkpoint_enabled &&
+            now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
+            update_checkpoint_current(checkpoint, last_processed);
+            std::string checkpoint_error;
+            if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+            last_checkpoint = now;
+        }
+        if (now - last_stats >= std::chrono::seconds(30)) {
+            print_kangaroo_stats(processed, now - started);
+            last_stats = now;
+        }
+
+        ++current;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    update_checkpoint_current(checkpoint, last_processed);
+    if (options.checkpoint_enabled) {
+        std::string checkpoint_error;
+        if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+            std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+            return 1;
+        }
+    }
+    print_kangaroo_stats(processed, elapsed);
+    std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
     return 0;
 }
 

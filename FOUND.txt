@@ -1,0 +1,60 @@
+# Qchaves v2.0 - Chave Encontrada
+# Puzzle: 1
+# Data: 2026-04-08 16:01:26
+
+PuzzleID=1
+TargetSource=Puzzles/1.txt
+PrivateKeyHex=0000000000000000000000000000000000000000000000000000000000000001
+PrivateKeyDec=1
+WIFCompressed=KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn
+WIFUncompressed=5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf
+PublicKeyCompressed=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+PublicKeyUncompressed=0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+AddressCompressed=1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
+AddressUncompressed=1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
+Mode=address
+Type=both
+Thread=1
+Timestamp=2026-04-08T16:01:26
+Elapsed=0s
+
+# Qchaves v2.0 - Chave Encontrada
+# Puzzle: 1
+# Data: 2026-04-08 16:01:26
+
+PuzzleID=1
+TargetSource=Puzzles/1.txt
+PrivateKeyHex=0000000000000000000000000000000000000000000000000000000000000001
+PrivateKeyDec=1
+WIFCompressed=KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn
+WIFUncompressed=5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf
+PublicKeyCompressed=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+PublicKeyUncompressed=0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+AddressCompressed=1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
+AddressUncompressed=1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
+Mode=bsgs
+Type=both
+Thread=1
+Timestamp=2026-04-08T16:01:26
+Elapsed=0s
+
+# Qchaves v2.0 - Chave Encontrada
+# Puzzle: 1
+# Data: 2026-04-08 16:01:26
+
+PuzzleID=1
+TargetSource=Puzzles/1.txt
+PrivateKeyHex=0000000000000000000000000000000000000000000000000000000000000001
+PrivateKeyDec=1
+WIFCompressed=KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn
+WIFUncompressed=5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf
+PublicKeyCompressed=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+PublicKeyUncompressed=0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+AddressCompressed=1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
+AddressUncompressed=1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
+Mode=kangaroo
+Type=both
+Thread=1
+Timestamp=2026-04-08T16:01:26
+Elapsed=0s
+

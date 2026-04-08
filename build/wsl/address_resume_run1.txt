@@ -1,0 +1,11 @@
+[+] Algorithm: address
+[+] Target source: Puzzles/1.txt
+[+] Valid targets: 1 | warnings: 0
+[+] Hardware: logical=4 physical=2 RAM=3.7 BB
+[+] Auto-tune: profile=balanced threads=2 batch=1024
+[+] Range start: 0000000000000000000000000000000000000000000000000000000000000004
+[+] Range end:   0000000000000000000000000000000000000000000000000000000000000007
+[i] Backend portatil de referencia usando 1 thread efetiva nesta fase.
+[+] Checkpoint inicial salvo em build/wsl/address_resume.ckp
+[########......................] 25% | Total Keys: 1.0 | Rate: 1.0/s | ETA: 3s
+[+] Busca finalizada sem correspondencias

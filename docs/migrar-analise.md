@@ -13,7 +13,8 @@
 - Validação real de Base58Check e public keys.
 - Compatibilidade com os arquivos reais existentes em `Puzzles/`.
 - Aceite de public key inline para fluxos como `kangaroo`.
-- Backend portátil de referência para secp256k1 no modo `address`, suficiente para teste funcional e integração contínua.
+- Backend portátil de referência para secp256k1 e busca funcional nos modos `address`, `bsgs` e `kangaroo`.
 - Scripts de build/teste em WSL com `g++` quando `cmake` não estiver instalado.
 - Camada comum para hardware, métricas e checkpoint.
+- Checkpoint com auto-save, resume e save de emergência em `Ctrl+C`.
 - Preparação para evolução incremental do core sem quebrar compatibilidade entre plataformas.
