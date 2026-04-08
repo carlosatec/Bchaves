@@ -18,6 +18,30 @@ Base inicial da reescrita do projeto com foco em compatibilidade Linux/Windows.
 - Hot path otimizado com batching e multithreading real.
 - Implementação algorítmica otimizada de verdade para BSGS e Kangaroo.
 
+## Backend secp256k1
+Por padrão, a base usa o backend portátil interno.
+
+Também é possível compilar com `libsecp256k1` como backend opcional:
+
+Com CMake:
+```bash
+cmake --preset default -DQCHAVES_ENABLE_LIBSECP256K1=ON
+cmake --build --preset default
+```
+
+Com os scripts WSL:
+```bash
+QCHAVES_ENABLE_LIBSECP256K1=1 bash scripts/build_wsl.sh
+QCHAVES_ENABLE_LIBSECP256K1=1 bash scripts/test_wsl.sh
+```
+
+Se o header/lib não estiverem em paths padrão, use:
+```bash
+export LIBSECP256K1_INCLUDE_DIR=/caminho/include
+export LIBSECP256K1_LIBRARY=/caminho/libsecp256k1.so
+QCHAVES_ENABLE_LIBSECP256K1=1 bash scripts/build_wsl.sh
+```
+
 ## Build
 ```bash
 cmake --preset default

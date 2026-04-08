@@ -8,6 +8,7 @@ include(CTest)
 
 option(QCHAVES_ENABLE_NATIVE "Enable aggressive native CPU flags" OFF)
 option(QCHAVES_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+option(QCHAVES_ENABLE_LIBSECP256K1 "Enable optional libsecp256k1 backend" OFF)
 
 add_library(qchaves_common
     src/core/address.cpp
@@ -23,6 +24,17 @@ add_library(qchaves_common
 
 target_include_directories(qchaves_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(qchaves_common PRIVATE $<$<CONFIG:Debug>:QCHAVES_DEBUG=1>)
+
+if(QCHAVES_ENABLE_LIBSECP256K1)
+    find_path(SECP256K1_INCLUDE_DIR secp256k1.h)
+    find_library(SECP256K1_LIBRARY NAMES secp256k1 libsecp256k1)
+    if(NOT SECP256K1_INCLUDE_DIR OR NOT SECP256K1_LIBRARY)
+        message(FATAL_ERROR "QCHAVES_ENABLE_LIBSECP256K1=ON, mas libsecp256k1 nao foi encontrada")
+    endif()
+    target_include_directories(qchaves_common PRIVATE ${SECP256K1_INCLUDE_DIR})
+    target_link_libraries(qchaves_common PRIVATE ${SECP256K1_LIBRARY})
+    target_compile_definitions(qchaves_common PRIVATE QCHAVES_HAS_LIBSECP256K1=1)
+endif()
 
 if(MSVC)
     target_compile_options(qchaves_common PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)

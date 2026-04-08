@@ -15,6 +15,19 @@ CXXFLAGS=(
   -DQCHAVES_SOURCE_DIR="\"${ROOT_DIR}\""
   -I"${ROOT_DIR}/src"
 )
+LDFLAGS=()
+
+if [[ "${QCHAVES_ENABLE_LIBSECP256K1:-0}" == "1" ]]; then
+  CXXFLAGS+=(-DQCHAVES_HAS_LIBSECP256K1=1)
+  if [[ -n "${LIBSECP256K1_INCLUDE_DIR:-}" ]]; then
+    CXXFLAGS+=(-I"${LIBSECP256K1_INCLUDE_DIR}")
+  fi
+  if [[ -n "${LIBSECP256K1_LIBRARY:-}" ]]; then
+    LDFLAGS+=("${LIBSECP256K1_LIBRARY}")
+  else
+    LDFLAGS+=(-lsecp256k1)
+  fi
+fi
 
 COMMON_SOURCES=(
   "${ROOT_DIR}/src/core/address.cpp"
@@ -28,5 +41,5 @@ COMMON_SOURCES=(
   "${ROOT_DIR}/src/engine/app.cpp"
 )
 
-"${CXX}" "${CXXFLAGS[@]}" "${ROOT_DIR}/tests/test_main.cpp" "${COMMON_SOURCES[@]}" -o "${BUILD_DIR}/qchaves_tests"
+"${CXX}" "${CXXFLAGS[@]}" "${ROOT_DIR}/tests/test_main.cpp" "${COMMON_SOURCES[@]}" "${LDFLAGS[@]}" -o "${BUILD_DIR}/qchaves_tests"
 "${BUILD_DIR}/qchaves_tests"

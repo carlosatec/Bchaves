@@ -2,6 +2,10 @@
 
 #include <algorithm>
 
+#if defined(QCHAVES_HAS_LIBSECP256K1)
+#include <secp256k1.h>
+#endif
+
 namespace qchaves::core {
 namespace {
 
@@ -25,6 +29,12 @@ const BigInt kFieldPrime = from_hex_literal("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 const BigInt kCurveOrder = from_hex_literal("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
 const BigInt kGeneratorX = from_hex_literal("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798");
 const BigInt kGeneratorY = from_hex_literal("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8");
+
+#if defined(QCHAVES_HAS_LIBSECP256K1)
+const Secp256k1BackendInfo kBackendInfo{"libsecp256k1", true, true};
+#else
+const Secp256k1BackendInfo kBackendInfo{"portable", false, false};
+#endif
 
 bool add_in_place(BigInt& lhs, const BigInt& rhs) {
     std::uint64_t carry = 0;
@@ -244,6 +254,57 @@ std::array<std::uint8_t, 32> to_bytes32(const BigInt& value) {
     }
     return out;
 }
+
+#if defined(QCHAVES_HAS_LIBSECP256K1)
+BigInt from_bytes32(const std::uint8_t* bytes) {
+    BigInt out;
+    for (std::size_t i = 0; i < 32; ++i) {
+        out = out << 8u;
+        out += BigInt(bytes[i]);
+    }
+    return out;
+}
+
+class Secp256k1ContextHolder {
+public:
+    Secp256k1ContextHolder() : context_(secp256k1_context_create(SECP256K1_CONTEXT_SIGN)) {}
+
+    ~Secp256k1ContextHolder() {
+        if (context_ != nullptr) {
+            secp256k1_context_destroy(context_);
+        }
+    }
+
+    secp256k1_context* get() const { return context_; }
+
+private:
+    secp256k1_context* context_ = nullptr;
+};
+
+Secp256k1ContextHolder& backend_context() {
+    static Secp256k1ContextHolder holder;
+    return holder;
+}
+
+Secp256k1Point point_from_pubkey(const secp256k1_pubkey& pubkey) {
+    std::array<std::uint8_t, 65> serialized{};
+    std::size_t output_length = serialized.size();
+    if (secp256k1_ec_pubkey_serialize(backend_context().get(),
+                                      serialized.data(),
+                                      &output_length,
+                                      &pubkey,
+                                      SECP256K1_EC_UNCOMPRESSED) != 1 ||
+        output_length != serialized.size()) {
+        return {};
+    }
+
+    return {
+        from_bytes32(serialized.data() + 1u),
+        from_bytes32(serialized.data() + 33u),
+        false
+    };
+}
+#endif
 
 }  // namespace
 
@@ -473,10 +534,23 @@ std::string bigint_to_decimal(const BigInt& value) {
     return out;
 }
 
+const Secp256k1BackendInfo& secp256k1_backend_info() {
+    return kBackendInfo;
+}
+
 Secp256k1Point secp256k1_multiply(const BigInt& scalar) {
     if (!is_valid_private_key(scalar)) {
         return {};
     }
+
+#if defined(QCHAVES_HAS_LIBSECP256K1)
+    const auto private_key = to_bytes32(scalar);
+    secp256k1_pubkey pubkey{};
+    if (secp256k1_ec_pubkey_create(backend_context().get(), &pubkey, private_key.data()) != 1) {
+        return {};
+    }
+    return point_from_pubkey(pubkey);
+#else
 
     Secp256k1Point result;
     Secp256k1Point addend{kGeneratorX, kGeneratorY, false};
@@ -489,6 +563,7 @@ Secp256k1Point secp256k1_multiply(const BigInt& scalar) {
         k = shr1(k);
     }
     return result;
+#endif
 }
 
 std::vector<std::uint8_t> serialize_pubkey(const Secp256k1Point& point, bool compressed) {

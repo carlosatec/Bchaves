@@ -43,12 +43,19 @@ struct Secp256k1Point {
     bool infinity = true;
 };
 
+struct Secp256k1BackendInfo {
+    const char* name = "portable";
+    bool optimized = false;
+    bool external = false;
+};
+
 bool parse_big_int(const std::string& text, BigInt& out);
 const BigInt& secp256k1_curve_order();
 bool is_valid_private_key(const BigInt& value);
 bool bigint_to_u64(const BigInt& value, std::uint64_t& out);
 std::string bigint_to_hex(const BigInt& value, std::size_t width_bytes = 32);
 std::string bigint_to_decimal(const BigInt& value);
+const Secp256k1BackendInfo& secp256k1_backend_info();
 
 Secp256k1Point secp256k1_multiply(const BigInt& scalar);
 std::vector<std::uint8_t> serialize_pubkey(const Secp256k1Point& point, bool compressed);
