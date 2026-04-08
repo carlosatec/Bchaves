@@ -1,0 +1,38 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default",
+      "binaryDir": "${sourceDir}/build/default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QCHAVES_ENABLE_NATIVE": "OFF"
+      }
+    },
+    {
+      "name": "native",
+      "displayName": "Native CPU",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/native",
+      "cacheVariables": {
+        "QCHAVES_ENABLE_NATIVE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "native",
+      "configurePreset": "native"
+    }
+  ]
+}
