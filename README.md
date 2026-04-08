@@ -1,6 +1,6 @@
 # Bchaves
 
-Base inicial da reescrita do projeto com foco em compatibilidade Linux/Windows.
+Base funcional da reescrita do projeto com foco em compatibilidade Linux/Windows e evolução incremental para um core mais otimizado.
 
 ## O que esta base entrega
 - Build portátil com CMake e presets.
@@ -9,14 +9,25 @@ Base inicial da reescrita do projeto com foco em compatibilidade Linux/Windows.
 - Leitura dos arquivos reais em `Puzzles/` e suporte a alvo inline quando aplicável.
 - Backend portátil de referência para secp256k1, sem dependência externa obrigatória.
 - Backends de referência funcionais para `address`, `bsgs` e `kangaroo`.
+- Execução paralela de referência para `address`, `bsgs` e `kangaroo` quando a largura do range cabe em `u64`.
+- Matcher de alvos indexado para evitar varredura linear no hot path de comparação.
 - Checkpoint binário portátil com CRC32, auto-save, resume e save de emergência em `Ctrl+C`.
 - Auto-tuning inicial e detecção básica de hardware.
 - Saída padronizada para progresso e métricas.
 
 ## O que ainda falta
-- Backend otimizado com `libsecp256k1` e GLV/wNAF.
-- Hot path otimizado com batching e multithreading real.
-- Implementação algorítmica otimizada de verdade para BSGS e Kangaroo.
+- Ativar e validar em ambiente real o backend externo com `libsecp256k1`.
+- Substituir o core portátil por hot path otimizado de verdade com batching/stride e menor overhead por chave.
+- Implementar versões algorítmicas reais e otimizadas de BSGS e Kangaroo.
+- Melhorar paralelização para ranges acima de `u64` de largura.
+- Adicionar tuning mais profundo de CPU/cache/afinidade.
+
+## Estado Atual
+- `address` funciona com busca real, `checkpoint`, `resume`, `Ctrl+C` e caminho paralelo de referência.
+- `bsgs` e `kangaroo` funcionam como backends portáteis de referência, inclusive com `checkpoint`, `resume`, `Ctrl+C` e caminho paralelo de referência.
+- O backend secp256k1 atualmente validado é o portátil interno.
+- O caminho opcional com `libsecp256k1` já está preparado no build, mas depende da biblioteca existir no ambiente.
+- O arquivo [implementar.txt](D:\Workspace\Bchaves\implementar.txt) lista o backlog técnico do que ainda falta.
 
 ## Backend secp256k1
 Por padrão, a base usa o backend portátil interno.
@@ -146,7 +157,17 @@ Notas do modo `address`:
 Notas dos modos `bsgs` e `kangaroo`:
 - Nesta base, ambos usam backend portátil de referência para busca funcional e integração.
 - O fluxo de `checkpoint`, `resume` via `QCHVES_RESUME=1` e `Ctrl+C` já funciona nesses modos.
-- Eles ainda não usam as otimizações esperadas no plano original, então servem como base correta e portável, não como implementação final de performance.
+- Eles ainda não usam as otimizações esperadas no plano original, então servem como base correta, paralela e portável, não como implementação final de performance.
+
+## Validação
+Última validação feita em WSL:
+- `bash scripts/build_wsl.sh`
+- `bash scripts/test_wsl.sh`
+- `address` validado em range explícito com caminho paralelo
+- `bsgs` validado encontrando `Puzzles/1.txt`
+- `kangaroo` validado encontrando `Puzzles/1.txt`
+- `resume` validado com `QCHVES_RESUME=1`
+- `Ctrl+C` validado com checkpoint de emergência salvo
 
 ## Observações de portabilidade
 - `-march=native` fica desabilitado por padrão para preservar portabilidade binária.

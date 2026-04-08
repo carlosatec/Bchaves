@@ -15,6 +15,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -22,6 +23,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace qchaves::engine {
@@ -60,6 +62,23 @@ struct AddressParallelState {
     std::mutex hit_mutex;
     bool hit_found = false;
     AddressHit hit{};
+};
+
+struct SequentialParallelState {
+    std::atomic<bool> stop{false};
+    std::atomic<std::uint64_t> processed_total{0};
+    std::atomic<std::uint64_t> active_workers{0};
+    std::atomic<std::uint64_t> next_offset{0};
+    std::mutex hit_mutex;
+    bool hit_found = false;
+    AddressHit hit{};
+};
+
+struct TargetMatcher {
+    std::unordered_set<std::string> address_compressed;
+    std::unordered_set<std::string> address_uncompressed;
+    std::unordered_set<std::string> pubkey_compressed;
+    std::unordered_set<std::string> pubkey_uncompressed;
 };
 
 void checkpoint_bigint(const BigInt& value, std::array<std::uint8_t, 32>& out);
@@ -401,6 +420,19 @@ void store_parallel_hit(AddressParallelState& state,
     state.stop.store(true, std::memory_order_relaxed);
 }
 
+void store_parallel_hit(SequentialParallelState& state,
+                        std::uint32_t thread_id,
+                        const qchaves::core::DerivedKeyInfo& key_info) {
+    std::lock_guard<std::mutex> lock(state.hit_mutex);
+    if (state.hit_found) {
+        return;
+    }
+    state.hit_found = true;
+    state.hit.thread_id = thread_id;
+    state.hit.key_info = key_info;
+    state.stop.store(true, std::memory_order_relaxed);
+}
+
 bool type_allows_compressed(qchaves::system::SearchType type) {
     return type == qchaves::system::SearchType::compress || type == qchaves::system::SearchType::both;
 }
@@ -409,18 +441,48 @@ bool type_allows_uncompressed(qchaves::system::SearchType type) {
     return type == qchaves::system::SearchType::uncompress || type == qchaves::system::SearchType::both;
 }
 
-bool target_matches(const qchaves::system::TargetEntry& target,
+std::string payload_key(const std::vector<std::uint8_t>& payload) {
+    return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+}
+
+TargetMatcher build_target_matcher(const qchaves::system::TargetLoadResult& targets) {
+    TargetMatcher matcher;
+    matcher.address_compressed.reserve(targets.entries.size());
+    matcher.address_uncompressed.reserve(targets.entries.size());
+    matcher.pubkey_compressed.reserve(targets.entries.size());
+    matcher.pubkey_uncompressed.reserve(targets.entries.size());
+    for (const auto& target : targets.entries) {
+        const std::string key = payload_key(target.payload);
+        if (target.type == qchaves::system::TargetType::address_btc) {
+            matcher.address_compressed.insert(key);
+            matcher.address_uncompressed.insert(key);
+        } else if (target.type == qchaves::system::TargetType::pubkey_compress) {
+            matcher.pubkey_compressed.insert(key);
+        } else if (target.type == qchaves::system::TargetType::pubkey_uncompress) {
+            matcher.pubkey_uncompressed.insert(key);
+        }
+    }
+    return matcher;
+}
+
+bool target_matches(const TargetMatcher& matcher,
                     const qchaves::system::SearchType type,
                     const qchaves::core::DerivedKeyInfo& key_info) {
-    if (target.type == qchaves::system::TargetType::address_btc) {
-        return (type_allows_compressed(type) && target.payload == key_info.address_payload_compressed) ||
-               (type_allows_uncompressed(type) && target.payload == key_info.address_payload_uncompressed);
+    if (type_allows_compressed(type)) {
+        if (matcher.address_compressed.find(payload_key(key_info.address_payload_compressed)) != matcher.address_compressed.end()) {
+            return true;
+        }
+        if (matcher.pubkey_compressed.find(payload_key(key_info.pubkey_compressed)) != matcher.pubkey_compressed.end()) {
+            return true;
+        }
     }
-    if (target.type == qchaves::system::TargetType::pubkey_compress) {
-        return type_allows_compressed(type) && target.payload == key_info.pubkey_compressed;
-    }
-    if (target.type == qchaves::system::TargetType::pubkey_uncompress) {
-        return type_allows_uncompressed(type) && target.payload == key_info.pubkey_uncompressed;
+    if (type_allows_uncompressed(type)) {
+        if (matcher.address_uncompressed.find(payload_key(key_info.address_payload_uncompressed)) != matcher.address_uncompressed.end()) {
+            return true;
+        }
+        if (matcher.pubkey_uncompressed.find(payload_key(key_info.pubkey_uncompressed)) != matcher.pubkey_uncompressed.end()) {
+            return true;
+        }
     }
     return false;
 }
@@ -667,7 +729,7 @@ void print_kangaroo_stats(std::uint64_t processed,
 
 std::optional<int> run_address_parallel(const qchaves::system::AddressOptions& options,
                                         const qchaves::system::TuneProfile& tune,
-                                        const qchaves::system::TargetLoadResult& targets,
+                                        const TargetMatcher& matcher,
                                         const std::filesystem::path& checkpoint_path,
                                         const SearchRange& original_range,
                                         CheckpointState& checkpoint,
@@ -795,11 +857,8 @@ std::optional<int> run_address_parallel(const qchaves::system::AddressOptions& o
                     }
                     state.processed_total.fetch_add(1u, std::memory_order_relaxed);
                     state.processed_backward.fetch_add(1u, std::memory_order_relaxed);
-                    for (const auto& target : targets.entries) {
-                        if (target_matches(target, options.type, key_info)) {
-                            store_parallel_hit(state, thread_id, key_info);
-                            break;
-                        }
+                    if (target_matches(matcher, options.type, key_info)) {
+                        store_parallel_hit(state, thread_id, key_info);
                     }
                     if (state.stop.load(std::memory_order_relaxed) || current == local_begin) {
                         break;
@@ -823,11 +882,8 @@ std::optional<int> run_address_parallel(const qchaves::system::AddressOptions& o
                     }
                     state.processed_total.fetch_add(1u, std::memory_order_relaxed);
                     state.processed_forward.fetch_add(1u, std::memory_order_relaxed);
-                    for (const auto& target : targets.entries) {
-                        if (target_matches(target, options.type, key_info)) {
-                            store_parallel_hit(state, thread_id, key_info);
-                            break;
-                        }
+                    if (target_matches(matcher, options.type, key_info)) {
+                        store_parallel_hit(state, thread_id, key_info);
                     }
                     if (state.stop.load(std::memory_order_relaxed) || current == local_end) {
                         break;
@@ -938,11 +994,158 @@ std::optional<int> run_address_parallel(const qchaves::system::AddressOptions& o
     return 0;
 }
 
+BigInt compute_sequential_parallel_checkpoint_current(const SearchRange& range,
+                                                      const qchaves::system::TuneProfile& tune,
+                                                      const SequentialParallelState& state,
+                                                      std::uint64_t width_u64) {
+    const std::uint64_t safety_window = std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(tune.batch_size)) *
+                                        std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(tune.threads));
+    const std::uint64_t assigned = std::min(width_u64, state.next_offset.load(std::memory_order_relaxed));
+    const std::uint64_t safe_offset = assigned > safety_window ? assigned - safety_window : 0u;
+    return range.start + BigInt(safe_offset);
+}
+
+std::optional<int> run_sequential_reference_parallel(
+    const std::string& algorithm,
+    const qchaves::system::CommonOptions& options,
+    qchaves::system::SearchType type,
+    const qchaves::system::TuneProfile& tune,
+    const TargetMatcher& matcher,
+    const std::filesystem::path& checkpoint_path,
+    const SearchRange& original_range,
+    CheckpointState& checkpoint,
+    bool checkpoint_enabled,
+    const std::function<void(std::uint64_t, const std::chrono::steady_clock::duration&, const SearchRange&)>& stats_printer) {
+    std::uint64_t width_u64 = 0;
+    if (!can_parallelize_address_range(original_range, tune.threads, width_u64)) {
+        return std::nullopt;
+    }
+
+    SequentialParallelState state;
+    state.active_workers.store(tune.threads, std::memory_order_relaxed);
+
+    const auto started = std::chrono::steady_clock::now();
+    auto last_stats = started;
+    auto last_checkpoint = started;
+    const std::uint64_t chunk_size = std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(tune.batch_size));
+    const std::uint32_t thread_count = std::max<std::uint32_t>(1u, tune.threads);
+
+    std::cout << "[+] " << algorithm << " parallel workers: " << thread_count
+              << " | chunk: " << chunk_size << '\n';
+
+    auto worker = [&](std::uint32_t thread_id) {
+        while (!state.stop.load(std::memory_order_relaxed) && !interrupt_requested()) {
+            const std::uint64_t offset = state.next_offset.fetch_add(chunk_size, std::memory_order_relaxed);
+            if (offset >= width_u64) {
+                break;
+            }
+            const std::uint64_t local_begin = offset;
+            const std::uint64_t local_end = std::min(width_u64 - 1u, local_begin + chunk_size - 1u);
+
+            for (std::uint64_t current = local_begin; current <= local_end; ++current) {
+                if (state.stop.load(std::memory_order_relaxed) || interrupt_requested()) {
+                    break;
+                }
+                qchaves::core::DerivedKeyInfo key_info;
+                const BigInt candidate = original_range.start + BigInt(current);
+                if (!qchaves::core::derive_key_info(candidate, key_info)) {
+                    state.stop.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                state.processed_total.fetch_add(1u, std::memory_order_relaxed);
+                if (target_matches(matcher, type, key_info)) {
+                    store_parallel_hit(state, thread_id, key_info);
+                }
+                if (state.stop.load(std::memory_order_relaxed) || current == local_end) {
+                    break;
+                }
+            }
+        }
+
+        state.active_workers.fetch_sub(1u, std::memory_order_relaxed);
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(thread_count);
+    for (std::uint32_t thread_id = 1; thread_id <= thread_count; ++thread_id) {
+        workers.emplace_back(worker, thread_id);
+    }
+
+    while (state.active_workers.load(std::memory_order_relaxed) > 0) {
+        if (interrupt_requested()) {
+            state.stop.store(true, std::memory_order_relaxed);
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (checkpoint_enabled &&
+            now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
+            update_checkpoint_current(checkpoint, compute_sequential_parallel_checkpoint_current(original_range, tune, state, width_u64));
+            std::string checkpoint_error;
+            if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                state.stop.store(true, std::memory_order_relaxed);
+                for (auto& worker_thread : workers) {
+                    if (worker_thread.joinable()) {
+                        worker_thread.join();
+                    }
+                }
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+            last_checkpoint = now;
+        }
+        if (now - last_stats >= std::chrono::seconds(30)) {
+            stats_printer(state.processed_total.load(std::memory_order_relaxed), now - started, original_range);
+            last_stats = now;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    for (auto& worker_thread : workers) {
+        if (worker_thread.joinable()) {
+            worker_thread.join();
+        }
+    }
+
+    if (interrupt_requested()) {
+        update_checkpoint_current(checkpoint, compute_sequential_parallel_checkpoint_current(original_range, tune, state, width_u64));
+        return finalize_interrupted_run(options, checkpoint_path, checkpoint, checkpoint_to_bigint(checkpoint.current));
+    }
+
+    if (state.hit_found) {
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        update_checkpoint_current(checkpoint, state.hit.key_info.private_key);
+        if (checkpoint_enabled) {
+            std::string checkpoint_error;
+            if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+                return 1;
+            }
+        }
+        print_found(algorithm, options.target_path, type, state.hit.key_info, state.hit.thread_id, elapsed);
+        append_found_record(algorithm, options.target_path, type, state.hit.key_info, state.hit.thread_id, elapsed);
+        return 0;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    update_checkpoint_current(checkpoint, compute_sequential_parallel_checkpoint_current(original_range, tune, state, width_u64));
+    if (checkpoint_enabled) {
+        std::string checkpoint_error;
+        if (!persist_checkpoint(checkpoint_path, checkpoint, checkpoint_error)) {
+            std::cerr << "[E] Falha ao salvar checkpoint: " << checkpoint_error << '\n';
+            return 1;
+        }
+    }
+    stats_printer(state.processed_total.load(std::memory_order_relaxed), elapsed, original_range);
+    std::cout << "[+] Busca finalizada sem correspondencias" << '\n';
+    return 0;
+}
+
 }  // namespace
 
 int run_address(const qchaves::system::AddressOptions& options) {
     ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, false);
+    const auto matcher = build_target_matcher(targets);
     print_warnings(targets);
     if (targets.entries.empty()) {
         std::cerr << "[E] Nenhum alvo valido carregado" << '\n';
@@ -984,7 +1187,7 @@ int run_address(const qchaves::system::AddressOptions& options) {
 
     if (const auto parallel_result = run_address_parallel(options,
                                                           tune,
-                                                          targets,
+                                                          matcher,
                                                           checkpoint_path,
                                                           range,
                                                           checkpoint,
@@ -1065,10 +1268,7 @@ int run_address(const qchaves::system::AddressOptions& options) {
         } else {
             ++processed_backward;
         }
-        for (const auto& target : targets.entries) {
-            if (!target_matches(target, options.type, key_info)) {
-                continue;
-            }
+        if (target_matches(matcher, options.type, key_info)) {
             const auto elapsed = std::chrono::steady_clock::now() - started;
             update_checkpoint_current(checkpoint, last_processed);
             std::string checkpoint_error;
@@ -1119,6 +1319,7 @@ int run_address(const qchaves::system::AddressOptions& options) {
 int run_bsgs(const qchaves::system::BsgsOptions& options) {
     ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, true);
+    const auto matcher = build_target_matcher(targets);
     print_warnings(targets);
     if (targets.entries.empty()) {
         std::cerr << "[E] Nenhuma public key valida carregada" << '\n';
@@ -1138,9 +1339,6 @@ int run_bsgs(const qchaves::system::BsgsOptions& options) {
     }
     std::cout << "[+] Range start: " << qchaves::core::bigint_to_hex(range.start) << '\n';
     std::cout << "[+] Range end:   " << qchaves::core::bigint_to_hex(range.end) << '\n';
-    if (tune.threads > 1) {
-        std::cout << "[i] Backend BSGS de referencia usando 1 thread efetiva nesta fase." << '\n';
-    }
 
     const auto checkpoint_path = options.checkpoint_path.value_or(qchaves::system::default_checkpoint_path("bsgs", options.bits));
     const auto resume = load_resume_state(checkpoint_path);
@@ -1166,6 +1364,27 @@ int run_bsgs(const qchaves::system::BsgsOptions& options) {
         return 0;
     }
 
+    if (const auto parallel_result = run_sequential_reference_parallel(
+            "bsgs",
+            options,
+            options.type,
+            tune,
+            matcher,
+            checkpoint_path,
+            range,
+            checkpoint,
+            options.checkpoint_enabled,
+            [](std::uint64_t processed, const std::chrono::steady_clock::duration& elapsed, const SearchRange& stats_range) {
+                print_bsgs_stats(processed, elapsed, stats_range);
+            });
+        parallel_result.has_value()) {
+        return parallel_result.value();
+    }
+
+    if (tune.threads > 1) {
+        std::cout << "[i] Paralelizacao real indisponivel para este range; usando fallback single-thread." << '\n';
+    }
+
     BigInt current = range.start;
     BigInt last_processed = range.start;
     std::uint64_t processed = estimate_processed_offset(qchaves::system::SearchMode::sequential, original_range, range);
@@ -1186,10 +1405,7 @@ int run_bsgs(const qchaves::system::BsgsOptions& options) {
 
         last_processed = current;
         ++processed;
-        for (const auto& target : targets.entries) {
-            if (!target_matches(target, options.type, key_info)) {
-                continue;
-            }
+        if (target_matches(matcher, options.type, key_info)) {
             const auto elapsed = std::chrono::steady_clock::now() - started;
             update_checkpoint_current(checkpoint, last_processed);
             std::string checkpoint_error;
@@ -1242,6 +1458,7 @@ int run_bsgs(const qchaves::system::BsgsOptions& options) {
 int run_kangaroo(const qchaves::system::KangarooOptions& options) {
     ScopedInterruptHandler interrupt_handler;
     const auto targets = qchaves::system::load_targets(options.target_path, true);
+    const auto matcher = build_target_matcher(targets);
     print_warnings(targets);
     if (targets.entries.empty()) {
         std::cerr << "[E] Nenhuma public key valida carregada" << '\n';
@@ -1260,9 +1477,6 @@ int run_kangaroo(const qchaves::system::KangarooOptions& options) {
     }
     std::cout << "[+] Range start: " << qchaves::core::bigint_to_hex(range.start) << '\n';
     std::cout << "[+] Range end:   " << qchaves::core::bigint_to_hex(range.end) << '\n';
-    if (tune.threads > 1) {
-        std::cout << "[i] Backend Kangaroo de referencia usando 1 thread efetiva nesta fase." << '\n';
-    }
 
     const auto checkpoint_path = options.checkpoint_path.value_or(qchaves::system::default_checkpoint_path("kangaroo"));
     const auto resume = load_resume_state(checkpoint_path);
@@ -1288,6 +1502,27 @@ int run_kangaroo(const qchaves::system::KangarooOptions& options) {
         return 0;
     }
 
+    if (const auto parallel_result = run_sequential_reference_parallel(
+            "kangaroo",
+            options,
+            qchaves::system::SearchType::both,
+            tune,
+            matcher,
+            checkpoint_path,
+            range,
+            checkpoint,
+            options.checkpoint_enabled,
+            [](std::uint64_t processed, const std::chrono::steady_clock::duration& elapsed, const SearchRange&) {
+                print_kangaroo_stats(processed, elapsed);
+            });
+        parallel_result.has_value()) {
+        return parallel_result.value();
+    }
+
+    if (tune.threads > 1) {
+        std::cout << "[i] Paralelizacao real indisponivel para este range; usando fallback single-thread." << '\n';
+    }
+
     BigInt current = range.start;
     BigInt last_processed = range.start;
     std::uint64_t processed = estimate_processed_offset(qchaves::system::SearchMode::sequential, original_range, range);
@@ -1308,10 +1543,7 @@ int run_kangaroo(const qchaves::system::KangarooOptions& options) {
 
         last_processed = current;
         ++processed;
-        for (const auto& target : targets.entries) {
-            if (!target_matches(target, qchaves::system::SearchType::both, key_info)) {
-                continue;
-            }
+        if (target_matches(matcher, qchaves::system::SearchType::both, key_info)) {
             const auto elapsed = std::chrono::steady_clock::now() - started;
             update_checkpoint_current(checkpoint, last_processed);
             std::string checkpoint_error;
