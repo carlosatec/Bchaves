@@ -14,6 +14,7 @@ ENGINE_SOURCES = \
 COMMON_SOURCES = \
 	core/address.cpp \
 	core/base58.cpp \
+	core/hash.cpp \
 	core/secp256k1.cpp \
 	system/checkpoint.cpp \
 	system/cli.cpp \

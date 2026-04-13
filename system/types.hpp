@@ -11,7 +11,10 @@ namespace bchaves::system {
 
 enum class TargetType {
     invalid = 0,
-    address_btc,
+    address_btc, // Legacy P2PKH (1...)
+    address_p2sh, // Nested SegWit (3...)
+    address_bech32, // Native SegWit (bc1...)
+    hash160,       // 20 bytes hex payload
     pubkey_compress,
     pubkey_uncompress,
 };

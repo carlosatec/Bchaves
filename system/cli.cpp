@@ -2,6 +2,7 @@
 
 #include "core/hash.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 namespace bchaves::system {
@@ -64,6 +65,9 @@ void parse_common_flag(const std::string& arg, int argc, char** argv, int& index
         options.benchmark = true;
     } else if (arg == "--secp256k1-backend") {
         options.secp256k1_backend = parse_secp256k1_backend(require_value(argc, argv, index, arg));
+    } else if (arg == "--list-hardware") {
+        std::cout << "[*] Comando list-hardware detectado...\n";
+        options.help = true; // Força parada após exibir info
     } else if (arg == "-h" || arg == "--help") {
         options.help = true;
     } else {
@@ -153,6 +157,11 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
             if (handled) continue;
             if (arg == "-r") {
                 options.range = require_value(argc, argv, i, arg);
+            } else if (arg == "-b") {
+                uint32_t bits = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
+                // Converte bits para range hexadecimal (ex: 71 -> 4000...:7fff...)
+                // Isso será tratado no engine/kangaroo.cpp se options.range estiver vazio mas bits > 0
+                options.range = "bits:" + std::to_string(bits);
             } else if (!arg.empty() && arg[0] != '-') {
                 options.target_path = arg;
             } else {
@@ -197,9 +206,12 @@ std::string bsgs_help() {
 }
 
 std::string kangaroo_help() {
-    return "Uso: ./kangaroo <arquivo|pubkey> -r <start:end> [opcoes]\n"
+    return "Uso: ./kangaroo <arquivo|pubkey> [opcoes]\n"
+           "  -b <n>         bit range (e.g., 71 para puzzle 71)\n"
+           "  -r <start:end> range customizado em hexadecimal\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
+           "  --list-hardware exibe informações da CPU e encerra\n"
            "  --benchmark    executa sem gravar checkpoint/FOUND.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"

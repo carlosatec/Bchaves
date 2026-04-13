@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <utility>
+#include <cstring>
 
 namespace bchaves::system {
 namespace {
@@ -30,6 +31,47 @@ bool validate_address_payload(const std::vector<std::uint8_t>& decoded) {
     return digest[0] == decoded[21] && digest[1] == decoded[22] && digest[2] == decoded[23] && digest[3] == decoded[24];
 }
 
+bool validate_address_p2sh(const std::vector<std::uint8_t>& decoded) {
+    if (decoded.size() != 25u || decoded[0] != 0x05u) return false;
+    bchaves::core::ByteVector body(decoded.begin(), decoded.begin() + 21);
+    const auto digest = bchaves::core::double_sha256(body);
+    return digest[0] == decoded[21] && digest[1] == decoded[22] && digest[2] == decoded[23] && digest[3] == decoded[24];
+}
+
+std::vector<uint8_t> decode_bech32_hash(const std::string& addr) {
+    // Implementação simplificada para extrair o Hash160 de endereços bc1q... (v0)
+    static const char* charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    if (addr.size() < 42 || addr.substr(0, 3) != "bc1") return {};
+    
+    // Pula o HRP "bc1" e o separador '1'
+    std::string data = addr.substr(4);
+    std::vector<uint8_t> values;
+    for (char c : data) {
+        const char* p = strchr(charset, c);
+        if (!p) return {};
+        values.push_back(p - charset);
+    }
+    
+    // Bech32 v0 bits conversion (32 to 256 for extraction of 20 bytes)
+    std::vector<uint8_t> out;
+    uint32_t acc = 0;
+    int bits = 0;
+    for (uint8_t v : values) {
+        acc = (acc << 5) | v;
+        bits += 5;
+        while (bits >= 8) {
+            bits -= 8;
+            out.push_back((acc >> bits) & 0xFF);
+        }
+    }
+    // Para P2WPKH, o primeiro byte é a versão (0) e o segundo é o tamanho (20)
+    // Então o Hash160 começa no índice 2 e tem 20 bytes
+    if (out.size() >= 22 && out[0] == 0) {
+        return std::vector<uint8_t>(out.begin() + 2, out.begin() + 22);
+    }
+    return {};
+}
+
 bool is_valid_pubkey(TargetType type, const std::string& line) {
     if (!bchaves::core::is_hex(line)) {
         return false;
@@ -45,9 +87,11 @@ bool is_valid_pubkey(TargetType type, const std::string& line) {
 
 bool looks_like_file_reference(const std::filesystem::path& input) {
     const std::string raw = input.string();
-    return raw.find('/') != std::string::npos ||
-           raw.find('\\') != std::string::npos ||
-           input.has_extension();
+    if (raw.size() <= 1) return false;
+    if (raw.find('/') != std::string::npos || raw.find('\\') != std::string::npos) return true;
+    if (input.has_extension()) return true;
+    if (raw.size() >= 26 && raw.size() <= 35 && raw.find('.') == std::string::npos) return false;
+    return false;
 }
 
 }  // namespace
@@ -59,8 +103,15 @@ TargetType detect_type(const std::string& line) {
     if (line.size() == 130u && bchaves::core::is_hex(line) && line.rfind("04", 0) == 0) {
         return TargetType::pubkey_uncompress;
     }
+    if (line.size() == 40u && bchaves::core::is_hex(line)) {
+        return TargetType::hash160;
+    }
     if (line.size() >= 26u && line.size() <= 35u && bchaves::core::is_base58_string(line)) {
-        return TargetType::address_btc;
+        if (line[0] == '1') return TargetType::address_btc;
+        if (line[0] == '3') return TargetType::address_p2sh;
+    }
+    if (line.size() >= 42u && line.rfind("bc1", 0) == 0) {
+        return TargetType::address_bech32;
     }
     return TargetType::invalid;
 }
@@ -78,8 +129,8 @@ TargetLoadResult load_target_inline(const std::string& input, bool require_pubke
         result.warnings.push_back({0, "alvo inline invalido"});
         return result;
     }
-    if (require_pubkeys_only && type == TargetType::address_btc) {
-        result.warnings.push_back({0, "modo exige public keys, endereco BTC inline ignorado"});
+    if (require_pubkeys_only && (type == TargetType::address_btc || type == TargetType::address_p2sh || type == TargetType::address_bech32)) {
+        result.warnings.push_back({0, "modo exige public keys, endereco ignorado em alvo inline"});
         return result;
     }
 
@@ -88,14 +139,25 @@ TargetLoadResult load_target_inline(const std::string& input, bool require_pubke
     entry.raw = cleaned;
     entry.type = type;
 
-    if (type == TargetType::address_btc) {
+    if (type == TargetType::address_btc || type == TargetType::address_p2sh) {
         bool ok = false;
         const auto decoded = bchaves::core::base58_decode(cleaned, &ok);
-        if (!ok || !validate_address_payload(decoded)) {
-            result.warnings.push_back({0, "checksum invalido em alvo inline"});
+        if (!ok || (type == TargetType::address_btc && !validate_address_payload(decoded)) || 
+            (type == TargetType::address_p2sh && !validate_address_p2sh(decoded))) {
+            result.warnings.push_back({0, "checksum ou versao invalida em alvo inline"});
             return result;
         }
-        entry.payload.assign(decoded.begin(), decoded.end());
+        // O payload para busca é o Hash160 (bytes 1 a 21)
+        entry.payload.assign(decoded.begin() + 1, decoded.begin() + 21);
+    } else if (type == TargetType::address_bech32) {
+        auto hash = decode_bech32_hash(cleaned);
+        if (hash.empty()) {
+            result.warnings.push_back({0, "bech32 invalido ou nao suportado"});
+            return result;
+        }
+        entry.payload = std::move(hash);
+    } else if (type == TargetType::hash160) {
+        entry.payload = bchaves::core::from_hex(cleaned);
     } else {
         if (!is_valid_pubkey(type, cleaned)) {
             result.warnings.push_back({0, "public key inline invalida"});
@@ -132,8 +194,8 @@ TargetLoadResult load_targets(const std::filesystem::path& file, bool require_pu
             result.warnings.push_back({line_number, "formato invalido (nao e base58 nem pubkey hex)"});
             continue;
         }
-        if (require_pubkeys_only && type == TargetType::address_btc) {
-            result.warnings.push_back({line_number, "modo exige public keys, endereco BTC ignorado"});
+        if (require_pubkeys_only && (type == TargetType::address_btc || type == TargetType::address_p2sh || type == TargetType::address_bech32)) {
+            result.warnings.push_back({line_number, "modo exige public keys, endereco ignorado"});
             continue;
         }
 
@@ -142,14 +204,24 @@ TargetLoadResult load_targets(const std::filesystem::path& file, bool require_pu
         entry.raw = cleaned;
         entry.type = type;
 
-        if (type == TargetType::address_btc) {
+        if (type == TargetType::address_btc || type == TargetType::address_p2sh) {
             bool ok = false;
             const auto decoded = bchaves::core::base58_decode(cleaned, &ok);
-            if (!ok || !validate_address_payload(decoded)) {
-                result.warnings.push_back({line_number, "checksum invalido"});
+            if (!ok || (type == TargetType::address_btc && !validate_address_payload(decoded)) || 
+                (type == TargetType::address_p2sh && !validate_address_p2sh(decoded))) {
+                result.warnings.push_back({line_number, "checksum ou versao invalida"});
                 continue;
             }
-            entry.payload.assign(decoded.begin(), decoded.end());
+            entry.payload.assign(decoded.begin() + 1, decoded.begin() + 21);
+        } else if (type == TargetType::address_bech32) {
+            auto hash = decode_bech32_hash(cleaned);
+            if (hash.empty()) {
+                result.warnings.push_back({line_number, "bech32 invalido ou nao suportado"});
+                continue;
+            }
+            entry.payload = std::move(hash);
+        } else if (type == TargetType::hash160) {
+            entry.payload = bchaves::core::from_hex(cleaned);
         } else {
             if (!is_valid_pubkey(type, cleaned)) {
                 result.warnings.push_back({line_number, "public key invalida"});

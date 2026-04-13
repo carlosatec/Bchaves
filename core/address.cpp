@@ -6,13 +6,13 @@
 namespace bchaves::core {
 namespace {
 
-std::string to_hex_string(const ByteVector& data) {
+std::string to_hex_string(const std::uint8_t* data, std::size_t length) {
     constexpr char hex[] = "0123456789abcdef";
     std::string out;
-    out.reserve(data.size() * 2);
-    for (const std::uint8_t byte : data) {
-        out += hex[(byte >> 4u) & 0xfu];
-        out += hex[byte & 0xfu];
+    out.reserve(length * 2);
+    for (std::size_t i = 0; i < length; ++i) {
+        out += hex[(data[i] >> 4u) & 0xfu];
+        out += hex[data[i] & 0xfu];
     }
     return out;
 }
@@ -21,13 +21,12 @@ ByteVector to_wif(const BigInt& private_key, bool compressed) {
     ByteVector key_bytes;
     key_bytes.reserve(compressed ? 34 : 33);
     
-    // Serializar BigInt (256 bits / 32 bytes)
-    for (int i = 7; i >= 0; --i) {
-        std::uint32_t limb = private_key.limbs[i];
-        key_bytes.push_back(static_cast<std::uint8_t>((limb >> 24) & 0xff));
-        key_bytes.push_back(static_cast<std::uint8_t>((limb >> 16) & 0xff));
-        key_bytes.push_back(static_cast<std::uint8_t>((limb >> 8) & 0xff));
-        key_bytes.push_back(static_cast<std::uint8_t>(limb & 0xff));
+    // Serializar BigInt (256 bits / 32 bytes) - Big Endian para WIF
+    for (int i = 3; i >= 0; --i) {
+        std::uint64_t limb = private_key.limbs[i];
+        for (int j = 7; j >= 0; --j) {
+            key_bytes.push_back(static_cast<std::uint8_t>((limb >> (j * 8)) & 0xff));
+        }
     }
 
     if (compressed) {
@@ -37,8 +36,9 @@ ByteVector to_wif(const BigInt& private_key, bool compressed) {
 }
 
 ByteVector hash_pubkey(const Secp256k1Point& point, bool compressed) {
-    const auto serialized = serialize_pubkey(point, compressed);
-    const auto sha = sha256(serialized.data(), serialized.size());
+    std::uint8_t buf[65];
+    std::size_t len = serialize_pubkey(point, compressed, buf);
+    const auto sha = sha256(buf, len);
     const auto hash = ripemd160(sha.data(), sha.size());
     ByteVector out(hash.begin(), hash.end());
     return out;
@@ -73,11 +73,12 @@ bool derive_key_info(const BigInt& private_key, DerivedKeyInfo& out) {
         return false;
     }
 
-    const auto serialized_compressed = serialize_pubkey(point, true);
-    out.pubkey_compressed_hex = to_hex_string(serialized_compressed);
+    std::uint8_t buf[65];
+    std::size_t len_c = serialize_pubkey(point, true, buf);
+    out.pubkey_compressed_hex = to_hex_string(buf, len_c);
 
-    const auto serialized_uncompressed = serialize_pubkey(point, false);
-    out.pubkey_uncompressed_hex = to_hex_string(serialized_uncompressed);
+    std::size_t len_u = serialize_pubkey(point, false, buf);
+    out.pubkey_uncompressed_hex = to_hex_string(buf, len_u);
 
     const auto hash_compressed = hash_pubkey(point, true);
     out.address_payload_compressed = hash_compressed;

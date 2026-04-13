@@ -14,6 +14,12 @@ using ByteVector = std::vector<std::uint8_t>;
 
 class Sha256 {
 public:
+    static bool supports_shani();
+    static bool supports_avx2();
+    
+    // Processamento em lote (8 hashes simultâneos via AVX2)
+    static void hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]);
+    
     Sha256() { reset(); }
 
     void reset() {
@@ -30,61 +36,10 @@ public:
         buffer_.fill(0);
     }
 
-    void update(const std::uint8_t* data, std::size_t length) {
-        for (std::size_t i = 0; i < length; ++i) {
-            buffer_[data_length_++] = data[i];
-            if (data_length_ == 64) {
-                transform();
-                bit_length_ += 512;
-                data_length_ = 0;
-            }
-        }
-    }
+    void update(const std::uint8_t* data, std::size_t length);
+    void update(const ByteVector& data);
 
-    void update(const ByteVector& data) {
-        update(data.data(), data.size());
-    }
-
-    std::array<std::uint8_t, 32> finalize() {
-        std::size_t i = data_length_;
-        if (data_length_ < 56) {
-            buffer_[i++] = 0x80;
-            while (i < 56) {
-                buffer_[i++] = 0x00;
-            }
-        } else {
-            buffer_[i++] = 0x80;
-            while (i < 64) {
-                buffer_[i++] = 0x00;
-            }
-            transform();
-            buffer_.fill(0);
-        }
-
-        bit_length_ += static_cast<std::uint64_t>(data_length_) * 8u;
-        buffer_[63] = static_cast<std::uint8_t>(bit_length_);
-        buffer_[62] = static_cast<std::uint8_t>(bit_length_ >> 8u);
-        buffer_[61] = static_cast<std::uint8_t>(bit_length_ >> 16u);
-        buffer_[60] = static_cast<std::uint8_t>(bit_length_ >> 24u);
-        buffer_[59] = static_cast<std::uint8_t>(bit_length_ >> 32u);
-        buffer_[58] = static_cast<std::uint8_t>(bit_length_ >> 40u);
-        buffer_[57] = static_cast<std::uint8_t>(bit_length_ >> 48u);
-        buffer_[56] = static_cast<std::uint8_t>(bit_length_ >> 56u);
-        transform();
-
-        std::array<std::uint8_t, 32> hash{};
-        for (i = 0; i < 4; ++i) {
-            hash[i] = static_cast<std::uint8_t>((state_[0] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 4] = static_cast<std::uint8_t>((state_[1] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 8] = static_cast<std::uint8_t>((state_[2] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 12] = static_cast<std::uint8_t>((state_[3] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 16] = static_cast<std::uint8_t>((state_[4] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 20] = static_cast<std::uint8_t>((state_[5] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 24] = static_cast<std::uint8_t>((state_[6] >> (24u - i * 8u)) & 0xffu);
-            hash[i + 28] = static_cast<std::uint8_t>((state_[7] >> (24u - i * 8u)) & 0xffu);
-        }
-        return hash;
-    }
+    std::array<std::uint8_t, 32> finalize();
 
 private:
     static constexpr std::array<std::uint32_t, 64> kTable_ = {
@@ -101,60 +56,9 @@ private:
         0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
     };
 
-    static std::uint32_t rotate_right(std::uint32_t value, std::uint32_t bits) {
-        return (value >> bits) | (value << (32u - bits));
-    }
-
-    void transform() {
-        std::uint32_t m[64]{};
-        for (std::size_t i = 0, j = 0; i < 16; ++i, j += 4) {
-            m[i] = (static_cast<std::uint32_t>(buffer_[j]) << 24u) |
-                   (static_cast<std::uint32_t>(buffer_[j + 1]) << 16u) |
-                   (static_cast<std::uint32_t>(buffer_[j + 2]) << 8u) |
-                   static_cast<std::uint32_t>(buffer_[j + 3]);
-        }
-        for (std::size_t i = 16; i < 64; ++i) {
-            const std::uint32_t s0 = rotate_right(m[i - 15], 7u) ^ rotate_right(m[i - 15], 18u) ^ (m[i - 15] >> 3u);
-            const std::uint32_t s1 = rotate_right(m[i - 2], 17u) ^ rotate_right(m[i - 2], 19u) ^ (m[i - 2] >> 10u);
-            m[i] = m[i - 16] + s0 + m[i - 7] + s1;
-        }
-
-        std::uint32_t a = state_[0];
-        std::uint32_t b = state_[1];
-        std::uint32_t c = state_[2];
-        std::uint32_t d = state_[3];
-        std::uint32_t e = state_[4];
-        std::uint32_t f = state_[5];
-        std::uint32_t g = state_[6];
-        std::uint32_t h = state_[7];
-
-        for (std::size_t i = 0; i < 64; ++i) {
-            const std::uint32_t s1 = rotate_right(e, 6u) ^ rotate_right(e, 11u) ^ rotate_right(e, 25u);
-            const std::uint32_t ch = (e & f) ^ ((~e) & g);
-            const std::uint32_t temp1 = h + s1 + ch + kTable_[i] + m[i];
-            const std::uint32_t s0 = rotate_right(a, 2u) ^ rotate_right(a, 13u) ^ rotate_right(a, 22u);
-            const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-            const std::uint32_t temp2 = s0 + maj;
-
-            h = g;
-            g = f;
-            f = e;
-            e = d + temp1;
-            d = c;
-            c = b;
-            b = a;
-            a = temp1 + temp2;
-        }
-
-        state_[0] += a;
-        state_[1] += b;
-        state_[2] += c;
-        state_[3] += d;
-        state_[4] += e;
-        state_[5] += f;
-        state_[6] += g;
-        state_[7] += h;
-    }
+    void transform();
+    void transform_portable();
+    static std::uint32_t rotate_right(std::uint32_t value, std::uint32_t bits);
 
     std::array<std::uint8_t, 64> buffer_{};
     std::array<std::uint32_t, 8> state_{};

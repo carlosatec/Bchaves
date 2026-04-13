@@ -159,7 +159,7 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
     std::memcpy(state.current.data(), payload.data() + offset, state.current.size());
     offset += state.current.size();
     if (version >= 4u) {
-        if (offset + state.current_aux.size() + 24u > payload.size()) {
+        if (offset + state.current_aux.size() + 32u > payload.size()) {
             error = "checkpoint truncado ao ler estado extendido";
             return false;
         }

@@ -4,12 +4,11 @@ O **Bchaves** utiliza uma arquitetura em camadas projetada para performance e mo
 
 ## 📂 Estrutura de Diretórios
 
-### 1. `core/` (Fundamentos e Primitivos)
-Esta é a base do sistema. Contém implementações que não possuem lógica de "negócio" de busca, mas sim as ferramentas necessárias para que ela ocorra.
-- **`address.cpp/hpp`**: Lógica para derivação de endereços Bitcoin (Hash160, Base58).
-- **`secp256k1.cpp/hpp`**: Operações em curvas elípticas (Jacobian, multiplicação escalar).
-- **`cuckoo.hpp`**: Filtro de alta performance usado para buscas ultra-rápidas.
-- **`bigint.hpp`**: (Geralmente integrado no secp256k1) Aritmética de precisão arbitrária otimizada para 256 bits.
+### 1. `core/` (Fundamentos Zero-Allocation)
+Esta é a base do sistema, projetada para ter **zero alocações de heap** no loop crítico.
+- **`secp256k1.cpp/hpp`**: Operações em curvas elípticas Jacobianas com otimização **GLV**. Funções de serialização redesenhadas para usar buffers locais.
+- **`address.cpp/hpp`**: Lógica para derivação de endereços Bitcoin, agora suportando **SegWit (Bech32)** e **P2SH**.
+- **`cuckoo.hpp`**: Filtro probabilístico de alta densidade.
 
 ### 2. `engine/` (Motores de Busca)
 Contém a lógica pesada de "como encontrar a chave". É aqui que os algoritmos de busca são implementados.
@@ -25,9 +24,8 @@ Arquivos pequenos que servem apenas como "wrappers" para criar binários diferen
 ### 4. `system/` (Utilidades do SO)
 Gerenciamento de recursos do sistema e I/O.
 - **`checkpoint.cpp`**: Persistência de progresso em arquivos `.ckp`.
-- **`hardware.cpp`**: Detecção de CPU, núcleos e memória RAM disponível.
-- **`cli.cpp`**: Interpretador de argumentos de linha de comando.
-- **`targets.cpp`**: Carregamento eficiente de arquivos de texto com milhares de endereços/chaves.
+- **`hardware.cpp`**: Detecção avançada de CPU (CPUID Leaf 4), identificando **Caches L3**, núcleos físicos e extensões de instrução (**AVX2, BMI2, SHA**).
+- **`targets.cpp`**: Carregador de alvos polimórfico, tratando automaticamente endereços Legados, P2SH, SegWit e Hash160.
 
 ### 5. `traps/` e `puzzles/`
 - **`traps/`**: Diretório usado pelo motor Kangaroo para despejar dados da memória no disco (NVMe) quando a RAM está cheia.

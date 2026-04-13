@@ -15,7 +15,7 @@ enum class Secp256k1BackendKind {
 };
 
 struct BigInt {
-    std::array<std::uint32_t, 8> limbs{};
+    std::array<std::uint64_t, 4> limbs{};
 
     BigInt() = default;
     BigInt(std::uint64_t value);
@@ -50,6 +50,12 @@ struct Secp256k1Point {
     bool infinity = true;
 };
 
+struct PointJacobian {
+    BigInt x{};
+    BigInt y{};
+    BigInt z{};
+};
+
 struct Secp256k1BackendInfo {
     const char* name = "portable";
     bool optimized = false;
@@ -69,11 +75,19 @@ Secp256k1BackendKind active_secp256k1_backend();
 const Secp256k1BackendInfo& secp256k1_backend_info();
 
 Secp256k1Point secp256k1_multiply(const BigInt& scalar);
-std::vector<std::uint8_t> serialize_pubkey(const Secp256k1Point& point, bool compressed);
-Secp256k1Point deserialize_pubkey(const std::vector<std::uint8_t>& data);
+std::size_t serialize_pubkey(const Secp256k1Point& point, bool compressed, std::uint8_t* out);
+Secp256k1Point deserialize_pubkey(const std::uint8_t* data, std::size_t length);
 
 Secp256k1Point secp256k1_add(const Secp256k1Point& a, const Secp256k1Point& b);
 Secp256k1Point secp256k1_multiply_glv(const BigInt& scalar);
+
+// Performance / Batching API
+PointJacobian to_jacobian(const BigInt& x, const BigInt& y);
+Secp256k1Point from_jacobian(const PointJacobian& p);
+PointJacobian double_point(const PointJacobian& p);
+PointJacobian add_points(const PointJacobian& p1, const PointJacobian& p2);
+PointJacobian add_points_mixed(const PointJacobian& p1, const Secp256k1Point& p2);
+void batch_normalize(PointJacobian* points, Secp256k1Point* outputs, std::size_t count);
 
 // Aritmética Modular e Utilitários Exportados
 BigInt mod_add(const BigInt& a, const BigInt& b, const BigInt& p);

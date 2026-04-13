@@ -51,26 +51,51 @@ void init_jump_table() {
 }
 
 bool is_distinguished(const bchaves::core::BigInt& x, std::uint32_t bits) {
-    // Check if last N bits are zero
-    std::uint32_t mask = (1u << bits) - 1;
-    return (x.limbs[0] & mask) == 0;
+    // Check if leading N bits are zero (high bits)
+    if (bits == 0) return true;
+    std::uint32_t limb_idx = (255 - bits) / 64;
+    std::uint32_t bit_offset = 63 - (255 - bits) % 64;
+    if (limb_idx >= 4) return x.is_zero();
+    std::uint64_t mask = (bit_offset == 63) ? ~0ULL : (((1ULL << (bit_offset + 1)) - 1ULL));
+    return (x.limbs[limb_idx] & mask) == 0;
 }
 
 } // namespace
 
 int run_kangaroo(const bchaves::system::KangarooOptions& options) {
+    auto hardware = bchaves::system::detect_hardware();
+    if (options.help) {
+        // Se foi --list-hardware via CommonOptions (flag modificada no cli.cpp)
+        // No CLI atual, setamos help=true para forçar a parada.
+        std::cout << "[*] Hardware Detectado:\n"
+                  << "    Cores: " << hardware.num_cores << " (Fisicos: " << hardware.num_physical_cores << ")\n"
+                  << "    RAM: " << (hardware.ram_total / (1024*1024*1024)) << " GB (Livre: " << (hardware.ram_available / (1024*1024*1024)) << " GB)\n"
+                  << "    Cache L3: " << (hardware.l3_cache / (1024*1024)) << " MB\n"
+                  << "    Features: " << (hardware.features & bchaves::system::cpu_avx2 ? "AVX2 " : "")
+                                     << (hardware.features & bchaves::system::cpu_bmi2 ? "BMI2 " : "") 
+                                     << (hardware.features & bchaves::system::cpu_sha_ni ? "SHA-NI " : "") << "\n";
+        return 0;
+    }
+
     std::signal(SIGINT, handle_sig);
     std::cout << "[+] Iniciando Kangaroo (Architectural Fleet Model)\n";
     
-    // Parsing range "start:end"
     bchaves::core::BigInt range_start, range_end;
-    size_t colon = options.range.find(':');
-    if (colon == std::string::npos) {
-        std::cerr << "[E] Formato de range invalido. Use -r start:end (HEX)\n";
-        return 1;
+    if (options.range.find("bits:") == 0) {
+        uint32_t bits = std::stoul(options.range.substr(5));
+        std::cout << "[*] Modo Bits Detectado: " << bits << "\n";
+        // range_start = 2^(bits-1), range_end = 2^bits - 1
+        range_start = bchaves::core::BigInt(1) << (bits - 1);
+        range_end = (bchaves::core::BigInt(1) << bits) - bchaves::core::BigInt(1);
+    } else {
+        size_t colon = options.range.find(':');
+        if (colon == std::string::npos) {
+            std::cerr << "[E] Formato de range invalido. Use -b bits ou -r start:end (HEX)\n";
+            return 1;
+        }
+        bchaves::core::parse_big_int(options.range.substr(0, colon).c_str(), range_start);
+        bchaves::core::parse_big_int(options.range.substr(colon + 1).c_str(), range_end);
     }
-    bchaves::core::parse_big_int(options.range.substr(0, colon).c_str(), range_start);
-    bchaves::core::parse_big_int(options.range.substr(colon + 1).c_str(), range_end);
 
     init_jump_table();
     
@@ -81,7 +106,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         std::cerr << "[E] Nenhuma Public Key encontrada no arquivo de alvos.\n";
         return 1;
     }
-    bchaves::core::Secp256k1Point target_y = bchaves::core::deserialize_pubkey(target_load.entries[0].payload);
+    bchaves::core::Secp256k1Point target_y = bchaves::core::deserialize_pubkey(target_load.entries[0].payload.data(), target_load.entries[0].payload.size());
     if (target_y.infinity) {
         std::cerr << "[E] Falha ao desserializar Ponto Y.\n";
         return 1;
@@ -96,32 +121,49 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
 
     auto worker = [&](int thread_id) {
         // Fleet de 64 Kangaroos por Core (Etapa 2 da Arquitetura)
-        std::array<Kangaroo, 64> fleet;
+        struct KangarooMod {
+            bchaves::core::PointJacobian p_jac;
+            bchaves::core::Secp256k1Point p_aff;
+            bchaves::core::BigInt distance;
+            bool is_wild;
+        };
+        std::array<KangarooMod, 64> fleet;
+        
         for(int i=0; i<64; ++i) {
             fleet[i].is_wild = (i % 2 == 0);
-            if (fleet[i].is_wild) {
-                fleet[i].point = target_y; // Wild partos de Y
-                fleet[i].distance = 0;
-            } else {
-                fleet[i].point = bchaves::core::secp256k1_multiply(range_end); // Tame parte do fim
-                fleet[i].distance = range_end;
-            }
-            // Adicionar offset aleatório para cada canguru da frota
+            bchaves::core::Secp256k1Point start_p = fleet[i].is_wild ? target_y : bchaves::core::secp256k1_multiply(range_end);
+            fleet[i].distance = fleet[i].is_wild ? 0 : range_end;
+            
             bchaves::core::BigInt offset(i * 1000);
-            fleet[i].point = bchaves::core::secp256k1_add(fleet[i].point, bchaves::core::secp256k1_multiply(offset));
-            fleet[i].distance = fleet[i].distance + (fleet[i].is_wild ? offset : offset); 
+            start_p = bchaves::core::secp256k1_add(start_p, bchaves::core::secp256k1_multiply(offset));
+            fleet[i].distance = fleet[i].distance + offset; 
+            
+            fleet[i].p_jac = bchaves::core::to_jacobian(start_p.x, start_p.y);
+            fleet[i].p_aff = start_p;
         }
 
-        while(!g_stop_requested && !found.load()) {
-            for(int i=0; i<64; ++i) {
-                auto& k = fleet[i];
-                uint32_t jump_idx = k.point.x.limbs[0] % 64;
-                k.point = bchaves::core::secp256k1_add(k.point, g_jump_table[jump_idx].point);
-                k.distance = k.distance + g_jump_table[jump_idx].distance;
-                total_hops++;
+        bchaves::core::PointJacobian batch_j[64];
+        bchaves::core::Secp256k1Point batch_a[64];
 
-                if (is_distinguished(k.point.x, 16)) {
-                    uint64_t h = k.point.x.limbs[0];
+        while(!g_stop_requested && !found.load()) {
+            // Rodada de saltos para toda a frota
+            for(int i=0; i<64; ++i) {
+                uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
+                fleet[i].p_jac = bchaves::core::add_points_mixed(fleet[i].p_jac, g_jump_table[jump_idx].point);
+                fleet[i].distance = fleet[i].distance + g_jump_table[jump_idx].distance;
+                batch_j[i] = fleet[i].p_jac;
+            }
+
+            // Normalização em massa da frota (1 mod_inv total)
+            bchaves::core::batch_normalize(batch_j, batch_a, 64);
+            total_hops += 64;
+
+            for(int i=0; i<64; ++i) {
+                fleet[i].p_aff = batch_a[i];
+                auto& k = fleet[i];
+
+                if (is_distinguished(k.p_aff.x, 16)) {
+                    uint64_t h = k.p_aff.x.limbs[0];
                     int shard_idx = h % 16;
                     auto& shard = shards[shard_idx];
                     
@@ -133,11 +175,8 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
                             if (!found.load()) {
                                 found = true;
                                 if (k.is_wild) {
-                                    // Wild (Y + d_w*G) hit Tame (end*G + d_t*G)
-                                    // Y = (end + d_t - d_w) * G
                                     solution = range_end + other.distance - k.distance;
                                 } else {
-                                    // Tame hit Wild
                                     solution = range_end + k.distance - other.distance;
                                 }
                             }

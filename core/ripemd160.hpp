@@ -65,74 +65,42 @@ inline std::array<std::uint8_t, 20> ripemd160(const std::uint8_t* input, std::si
         8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
     };
 
-    std::vector<std::uint8_t> data(input, input + length);
-    data.push_back(0x80u);
-    while ((data.size() % 64u) != 56u) {
-        data.push_back(0u);
-    }
-    const std::uint64_t bit_length = static_cast<std::uint64_t>(length) * 8u;
-    for (std::size_t i = 0; i < 8; ++i) {
-        data.push_back(static_cast<std::uint8_t>((bit_length >> (8u * i)) & 0xffu));
-    }
+    std::uint32_t h0 = 0x67452301u, h1 = 0xefcdab89u, h2 = 0x98badcfeu, h3 = 0x10325476u, h4 = 0xc3d2e1f0u;
 
-    std::uint32_t h0 = 0x67452301u;
-    std::uint32_t h1 = 0xefcdab89u;
-    std::uint32_t h2 = 0x98badcfeu;
-    std::uint32_t h3 = 0x10325476u;
-    std::uint32_t h4 = 0xc3d2e1f0u;
-
-    for (std::size_t offset = 0; offset < data.size(); offset += 64u) {
-        std::uint32_t x[16]{};
-        for (std::size_t i = 0; i < 16; ++i) {
-            const std::size_t base = offset + i * 4u;
-            x[i] = static_cast<std::uint32_t>(data[base]) |
-                   (static_cast<std::uint32_t>(data[base + 1]) << 8u) |
-                   (static_cast<std::uint32_t>(data[base + 2]) << 16u) |
-                   (static_cast<std::uint32_t>(data[base + 3]) << 24u);
+    // Fast padding for up to 55 bytes (supports SHA256 input case)
+    std::uint8_t buffer[64]{};
+    for (std::size_t i = 0; i < length && i < 64; ++i) buffer[i] = input[i];
+    if (length < 64) {
+        buffer[length] = 0x80u;
+        if (length < 56) {
+            const std::uint64_t bit_len = static_cast<std::uint64_t>(length) * 8u;
+            for (int i = 0; i < 8; ++i) buffer[56 + i] = (bit_len >> (i * 8u)) & 0xffu;
         }
-
-        std::uint32_t al = h0;
-        std::uint32_t bl = h1;
-        std::uint32_t cl = h2;
-        std::uint32_t dl = h3;
-        std::uint32_t el = h4;
-        std::uint32_t ar = h0;
-        std::uint32_t br = h1;
-        std::uint32_t cr = h2;
-        std::uint32_t dr = h3;
-        std::uint32_t er = h4;
-
-        for (std::size_t j = 0; j < 80; ++j) {
-            const std::uint32_t tl = ripemd_rotl(al + ripemd_f(j, bl, cl, dl) + x[r[j]] + ripemd_k(j), s[j]) + el;
-            al = el;
-            el = dl;
-            dl = ripemd_rotl(cl, 10u);
-            cl = bl;
-            bl = tl;
-
-            const std::uint32_t tr = ripemd_rotl(ar + ripemd_f(79u - j, br, cr, dr) + x[rp[j]] + ripemd_kp(j), sp[j]) + er;
-            ar = er;
-            er = dr;
-            dr = ripemd_rotl(cr, 10u);
-            cr = br;
-            br = tr;
-        }
-
-        const std::uint32_t temp = h1 + cl + dr;
-        h1 = h2 + dl + er;
-        h2 = h3 + el + ar;
-        h3 = h4 + al + br;
-        h4 = h0 + bl + cr;
-        h0 = temp;
     }
+
+    std::uint32_t x[16]{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        x[i] = static_cast<std::uint32_t>(buffer[i * 4]) | (static_cast<std::uint32_t>(buffer[i * 4 + 1]) << 8u) |
+               (static_cast<std::uint32_t>(buffer[i * 4 + 2]) << 16u) | (static_cast<std::uint32_t>(buffer[i * 4 + 3]) << 24u);
+    }
+
+    std::uint32_t al = h0, bl = h1, cl = h2, dl = h3, el = h4;
+    std::uint32_t ar = h0, br = h1, cr = h2, dr = h3, er = h4;
+
+    for (std::size_t j = 0; j < 80; ++j) {
+        std::uint32_t tl = ripemd_rotl(al + ripemd_f(j, bl, cl, dl) + x[r[j] + ripemd_k(j), s[j]) + el;
+        al = el; el = dl; dl = ripemd_rotl(cl, 10u); cl = bl; bl = tl;
+        std::uint32_t tr = ripemd_rotl(ar + ripemd_f(79u - j, br, cr, dr) + x[rp[j]] + ripemd_kp(j), sp[j]) + er;
+        ar = er; er = dr; dr = ripemd_rotl(cr, 10u); cr = br; br = tr;
+    }
+
+    const std::uint32_t t = h1 + cl + dr; h1 = h2 + dl + er; h2 = h3 + el + ar; h3 = h4 + al + br; h4 = h0 + bl + cr; h0 = t;
 
     std::array<std::uint8_t, 20> out{};
     const std::uint32_t state[5] = {h0, h1, h2, h3, h4};
-    for (std::size_t i = 0; i < 5; ++i) {
-        out[i * 4u] = static_cast<std::uint8_t>(state[i] & 0xffu);
-        out[i * 4u + 1u] = static_cast<std::uint8_t>((state[i] >> 8u) & 0xffu);
-        out[i * 4u + 2u] = static_cast<std::uint8_t>((state[i] >> 16u) & 0xffu);
-        out[i * 4u + 3u] = static_cast<std::uint8_t>((state[i] >> 24u) & 0xffu);
+    for (int i = 0; i < 5; ++i) {
+        out[i * 4] = state[i] & 0xffu; out[i * 4 + 1] = (state[i] >> 8) & 0xffu;
+        out[i * 4 + 2] = (state[i] >> 16) & 0xffu; out[i * 4 + 3] = (state[i] >> 24) & 0xffu;
     }
     return out;
 }

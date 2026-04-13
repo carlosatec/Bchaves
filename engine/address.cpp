@@ -39,10 +39,9 @@ bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher) {
     if (result.entries.empty()) return false;
     
     for (const auto& entry : result.entries) {
-        // Para endereços BTC, extraímos o hash160 do payload (depois do byte de versão e antes do checksum)
-        if (entry.payload.size() >= 21) {
+        if (entry.payload.size() == 20) {
              std::array<std::uint8_t, 20> h;
-             std::copy(entry.payload.begin() + 1, entry.payload.begin() + 21, h.begin());
+             std::copy(entry.payload.begin(), entry.payload.end(), h.begin());
              matcher.hashes.push_back(h);
         }
     }
@@ -89,33 +88,47 @@ void print_stats(uint64_t processed,
 bool resolve_range(const bchaves::system::AddressOptions& options,
                 bchaves::core::BigInt& start,
                 bchaves::core::BigInt& end) {
-    if (options.bits > 0 && options.bits <= 256) {
-        start = bchaves::core::BigInt(0);
-        end = bchaves::core::BigInt(0);
+    if (options.bits == 0 || options.bits > 256) {
+        std::cerr << "[E] Use -b <bits> (1-256)\n";
+        return false;
+    }
+    start = bchaves::core::BigInt(0);
+    end = bchaves::core::BigInt(0);
         
         // start = 2^(bits-1)
         if (options.bits == 1) {
             start.limbs[0] = 1;
         } else {
             std::size_t bit_idx = options.bits - 1;
-            start.limbs[bit_idx / 32] = (1u << (bit_idx % 32));
+            start.limbs[bit_idx / 64] = (1ULL << (bit_idx % 64));
         }
 
         // end = 2^(bits) - 1
         for (std::uint32_t i = 0; i < options.bits; ++i) {
-            end.limbs[i / 32] |= (1u << (i % 32));
+            end.limbs[i / 64] |= (1ULL << (i % 64));
         }
         
         std::cout << "[+] Bit range: " << options.bits << " bits\n";
         return true;
     }
-    std::cerr << "[E] Use -b <bits> (1-256)\n";
     return false;
 }
 
 } // namespace
 
 int run_address(const bchaves::system::AddressOptions& options) {
+    auto hardware = bchaves::system::detect_hardware();
+    if (options.help) {
+        std::cout << "[*] Hardware Detectado:\n"
+                  << "    Cores: " << hardware.num_cores << " (Fisicos: " << hardware.num_physical_cores << ")\n"
+                  << "    RAM: " << (hardware.ram_total / (1024*1024*1024)) << " GB (Livre: " << (hardware.ram_available / (1024*1024*1024)) << " GB)\n"
+                  << "    Cache L3: " << (hardware.l3_cache / (1024*1024)) << " MB\n"
+                  << "    Features: " << (hardware.features & bchaves::system::cpu_avx2 ? "AVX2 " : "")
+                                     << (hardware.features & bchaves::system::cpu_bmi2 ? "BMI2 " : "") 
+                                     << (hardware.features & bchaves::system::cpu_sha_ni ? "SHA-NI " : "") << "\n";
+        return 0;
+    }
+
     std::signal(SIGINT, handle_signal);
 
     std::string backend_error;
@@ -162,49 +175,98 @@ int run_address(const bchaves::system::AddressOptions& options) {
     }
 
     std::vector<std::thread> workers;
+    static constexpr size_t kBatchSize = 256;
+
     for (std::uint32_t i = 0; i < num_threads; ++i) {
-        workers.emplace_back([&, i]() {
+        workers.emplace_back([=, this]() {
             bchaves::core::BigInt current = start;
-            for(uint32_t s=0; s<i; ++s) ++current; 
+            bchaves::core::BigInt thread_offset(i);
+            bchaves::core::BigInt thread_step(num_threads);
+            current += thread_offset * thread_step; 
             
-            bchaves::core::Secp256k1Point p = bchaves::core::secp256k1_multiply(current);
-            bchaves::core::Secp256k1Point g = bchaves::core::secp256k1_multiply(bchaves::core::BigInt(num_threads));
-            
+            bchaves::core::PointJacobian p_jac = bchaves::core::to_jacobian(bchaves::core::secp256k1_multiply(current).x, bchaves::core::secp256k1_multiply(current).y);
+            bchaves::core::BigInt step_g_key(num_threads);
+            bchaves::core::BigInt step_g_batch_key(num_threads * kBatchSize);
+            bchaves::core::Secp256k1Point step_g = bchaves::core::secp256k1_multiply(step_g_key);
+            bchaves::core::Secp256k1Point step_g_batch = bchaves::core::secp256k1_multiply(step_g_batch_key);
+
+            bchaves::core::PointJacobian batch_p[kBatchSize];
+            bchaves::core::Secp256k1Point batch_affine[kBatchSize];
+            bchaves::core::BigInt batch_keys[kBatchSize];
+
             while (current <= end && !found.load()) {
                 if (g_interrupt_requested) break;
                 
-                const auto serialized = bchaves::core::serialize_pubkey(p, options.type != bchaves::system::SearchType::uncompress);
-                const auto sha = bchaves::core::sha256(serialized.data(), serialized.size());
-                const auto h160 = bchaves::core::ripemd160(sha.data(), sha.size());
-                
-                bool hit = false;
-                for (const auto& target : matcher.hashes) {
-                    if (std::memcmp(h160.data(), target.data(), 20) == 0) {
-                        hit = true;
-                        break;
-                    }
+                // Preparamos o lote
+                bchaves::core::PointJacobian temp_p = p_jac;
+                bchaves::core::BigInt temp_key = current;
+                for (size_t k = 0; k < kBatchSize; ++k) {
+                    batch_p[k] = temp_p;
+                    batch_keys[k] = temp_key;
+                    temp_p = bchaves::core::add_points_mixed(temp_p, step_g);
+                    temp_key += step_g_key;
                 }
 
-                if (hit) {
-                    std::lock_guard<std::mutex> lock(found_mutex);
-                    if (!found.load()) {
-                        bchaves::core::derive_key_info(current, found_key);
-                        found = true;
-                        
-                        // Salvar em FOUND.txt imediatamente
-                        std::ofstream f("FOUND.txt", std::ios::app);
-                        f << "Private Key (HEX): " << bchaves::core::bigint_to_hex(current) << "\n";
-                        f << "Address (Comp):    " << found_key.address_compressed << "\n";
-                        f << "Address (Uncomp):  " << found_key.address_uncompressed << "\n";
-                        f << "WIF (Comp):        " << found_key.wif_compressed << "\n";
-                        f << "--------------------------------------------------------\n";
+                // Normalizamos o lote inteiro (1 mod_inv total)
+                bchaves::core::batch_normalize(batch_p, batch_affine, kBatchSize);
+
+                // Verificamos o lote com despacho dinâmico (Batch 8 se AVX2)
+                std::uint8_t batch_sha_out[8][32];
+                std::uint8_t* sha_ptr[8];
+                const std::uint8_t* data_ptr[8];
+                std::uint8_t pub_bufs[8][65];
+                bool use_batch = bchaves::core::Sha256::supports_avx2();
+
+                for (size_t k = 0; k < kBatchSize; k += 8) {
+                    if (use_batch) {
+                        for(int u=0; u<8; ++u) {
+                            bchaves::core::serialize_pubkey(batch_affine[k+u], options.type != bchaves::system::SearchType::uncompress, pub_bufs[u]);
+                            data_ptr[u] = pub_bufs[u];
+                            sha_ptr[u] = batch_sha_out[u];
+                        }
+                        bchaves::core::Sha256::hash8(data_ptr, 33, sha_ptr); 
+
+                        for(int u=0; u<8; ++u) {
+                            const auto h160 = bchaves::core::ripemd160(batch_sha_out[u], 32);
+                            for (const auto& target : matcher.hashes) {
+                                if (std::memcmp(h160.data(), target.data(), 20) == 0) {
+                                    std::lock_guard<std::mutex> lock(found_mutex);
+                                    if (!found.load()) {
+                                        bchaves::core::derive_key_info(batch_keys[k+u], found_key);
+                                        found = true;
+                                        
+                                        std::ofstream f("FOUND.txt", std::ios::app);
+                                        f << "Private Key (HEX): " << bchaves::core::bigint_to_hex(batch_keys[k+u]) << "\n";
+                                        f << "Address (Comp):    " << found_key.address_compressed << "\n";
+                                        f << "--------------------------------------------------------\n";
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Implementação robusta unrolled para não-AVX2
+                        for(int u=0; u<8; ++u) {
+                            std::uint8_t pub_buf[65];
+                            size_t p_len = bchaves::core::serialize_pubkey(batch_affine[k+u], options.type != bchaves::system::SearchType::uncompress, pub_buf);
+                            const auto sha = bchaves::core::sha256(pub_buf, p_len);
+                            const auto h160 = bchaves::core::ripemd160(sha.data(), sha.size());
+                            for (const auto& target : matcher.hashes) {
+                                if (std::memcmp(h160.data(), target.data(), 20) == 0) {
+                                    std::lock_guard<std::mutex> lock(found_mutex);
+                                    if (!found.load()) {
+                                        bchaves::core::derive_key_info(batch_keys[k+u], found_key);
+                                        found = true;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    break;
+                    if (found.load()) break;
                 }
                 
-                total_processed++;
-                p = bchaves::core::secp256k1_add(p, g);
-                for(uint32_t s=0; s<num_threads; ++s) ++current;
+                total_processed += kBatchSize;
+                p_jac = bchaves::core::add_points_mixed(p_jac, step_g_batch);
+                current += step_g_batch_key;
             }
         });
     }
@@ -246,7 +308,19 @@ int run_address(const bchaves::system::AddressOptions& options) {
         return 0;
     }
 
-    if (g_interrupt_requested) std::cout << "[!] Interrompido pelo usuário\n";
+    if (g_interrupt_requested) {
+        std::cout << "\n[!] Interrompido pelo usuário. Salvando estado final...\n";
+        if (options.checkpoint_enabled) {
+            checkpoint.progress_primary = total_processed.load();
+            checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
+            std::string err;
+            if (bchaves::system::save_checkpoint(checkpoint_name, checkpoint, err)) {
+                std::cout << "[+] Checkpoint de emergência salvo com sucesso.\n";
+            } else {
+                std::cerr << "[E] Falha ao salvar checkpoint de emergência: " << err << "\n";
+            }
+        }
+    }
     return 0;
 }
 

@@ -5,9 +5,12 @@ O **Bchaves** implementa os algoritmos mais eficientes para o Problema do Logari
 ## 1. Baby-Step Giant-Step (BSGS)
 O BSGS é um algoritmo de *space-time tradeoff*. Para uma busca de $2^n$ chaves, ele gera $\sqrt{2^n}$ "baby steps" e realiza saltos gigantes de mesma magnitude.
 
-### Aceleração via Cuckoo Filter
-Diferente de implementações ingênuas que usam `std::unordered_map` para tudo, o Bchaves usa um **Cuckoo Filter** (em `core/cuckoo.hpp`) para filtrar 99.9% dos falsos positivos antes de consultar a tabela hash na RAM.
-- **Vantagem:** Reduz drasticamente os "cache misses" e economiza memória, permitindo carregar ranges maiores em menos RAM.
+### Aceleração BSGS Flat Memory
+O Bchaves utiliza uma arquitetura de armazenamento **Flat** otimizada para densidade massiva:
+- **Zero-Allocation**: Todos os buffers de busca são pré-alocados ou utilizam a pilha (stack), eliminando latência de heap allocation no loop quente.
+- **Ordered Shards**: As Baby Steps são distribuídas em 16 shards independentes baseados nos bits menos significativos do HashX.
+- **Busca Binária**: Cada shard é ordenado e consultado via `std::lower_bound`. Isso reduz o consumo de RAM de ~100 bytes (std::map) para apenas **16 bytes por entrada**.
+- **Cuckoo Filter**: Atua como barreira probabilística ultra-rápida, evitando 99.9% das buscas desnecessárias nos shards.
 
 ## 2. Pollard's Kangaroo
 Usado quando o alvo é uma Public Key conhecida e o range de busca é limitado (ou muito grande).

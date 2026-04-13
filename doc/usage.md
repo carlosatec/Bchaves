@@ -4,17 +4,23 @@ Este guia explica como operar o **Bchaves** de forma eficiente em buscas de long
 
 ## 💾 Persistência e Checkpoints
 
-O sistema salva o progresso automaticamente.
-- **Formato:** Arquivos `.ckp` binários.
-- **Frequência:** A cada 60 segundos (configurável no código).
-- **Como retomar:** Basta rodar o mesmo comando novamente. O sistema detecta o arquivo de checkpoint correspondente ao bit-range e retoma a busca.
+O sistema salva o progresso automaticamente de forma segura.
+- **Formato:** Arquivos `.ckp` binários (mais compactos e resistentes a erros).
+- **Frequência:** A cada 60 segundos por padrão.
+- **Salvamento de Emergência:** Ao capturar um sinal de interrupção (`Ctrl+C`), o Bchaves tenta salvar o estado atual antes de encerrar as threads.
+- **Como retomar:** Basta rodar o mesmo comando. O sistema detecta o checkpoint e retoma a busca.
 
 ## 🔍 Tipos de Busca (Modo Address)
 
-O binário `address` suporta três modos de compressão:
-1.  **`-R compress`**: Procura apenas por endereços derivados de chaves públicas comprimidas (mais comum).
-2.  **`-R uncompress`**: Procura apenas por chaves públicas não-comprimidas (comum em endereços muito antigos).
-3.  **`-R both`**: Procura por ambos simultaneamente (padrão, recomendado para puzzles).
+A busca automática identifica três tipos principais de endereços:
+1.  **P2PKH (Legacy)**: Endereços que começam com `1`.
+2.  **P2SH (Nested SegWit)**: Endereços que começam com `3`.
+3.  **Bech32 (Native SegWit)**: Endereços que começam com `bc1q` (v0).
+
+O binário `address` também permite filtrar por compressão:
+1.  **`-l compress`**: Procura apenas por chaves comprimidas.
+2.  **`-l uncompress`**: Procura apenas por chaves não-comprimidas.
+3.  **`-l both`**: Procura por ambos simultaneamente (padrão).
 
 ## 📂 Organização de Arquivos de Alvo
 
@@ -27,8 +33,24 @@ O Bchaves espera arquivos de texto simples:
 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
+## 🖥️ Verificando seu Hardware
+
+O Bchaves permite validar se as otimizações de CPU estão ativas:
+```bash
+./build/address --list-hardware
+```
+Isso exibirá a contagem de cores, memória livre, cache L3 e suporte a **AVX2 / BMI2 / SHA-NI**.
+
+## 🚀 Kangaroo Simplificado com Bits
+
+Antigamente o Kangaroo exigia ranges em Hexadecimal. Agora você pode usar bits:
+```bash
+# Busca automática entre 2^74 e 2^75-1
+./build/kangaroo targets.txt -b 75 -t 12
+```
+
 ## ⚠️ Dicas de Performance
 
 1.  **Número de Threads (`-t`)**: O padrão é detectar automaticamente, mas para máxima performance em máquinas dedicadas, você pode definir manualmente para o número de núcleos físicos.
-2.  **Uso de RAM**: Em modo BSGS, garanta que você tem memória livre suficiente para o filtro. No Kangaroo, o uso de RAM é o que define a probabilidade de colisão (sucesso); quanto mais melhor.
+2.  **Uso de RAM**: Em modo BSGS, agora usamos apenas **16 bytes** por ponto. Uma máquina com 16GB de RAM pode carregar quase 1 bilhão de Baby Steps.
 3.  **Dumping em SSD**: Se usar o Kangaroo por longas horas, certifique-se de que o diretório `traps/` está em um SSD/NVMe rápido, para não travar a CPU durante o despejo de dados.

@@ -117,25 +117,47 @@ HardwareInfo detect_hardware() {
     info.features = detect_cpu_features();
     info.l1_cache = 32u * 1024u;
     info.l2_cache = 256u * 1024u;
-    info.l3_cache = 0;
+    
+    // Detecção simplificada de L3 via CPUID Leaf 4 (Determinismo de Cache)
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+    unsigned int eax, ebx, ecx, edx;
+    if (__get_cpuid_count(4, 3, &eax, &ebx, &ecx, &edx)) {
+        unsigned int ways = ((ebx >> 22) & 0x3FF) + 1;
+        unsigned int partitions = ((ebx >> 12) & 0x3FF) + 1;
+        unsigned int line_size = (ebx & 0xFFF) + 1;
+        unsigned int sets = ecx + 1;
+        info.l3_cache = ways * partitions * line_size * sets;
+    } else {
+        info.l3_cache = 8u * 1024u * 1024u; // Heurística: 8MB se falhar
+    }
+#else
+    info.l3_cache = 8u * 1024u * 1024u; 
+#endif
     info.is_numa = false;
     return info;
 }
 
 TuneProfile tune_for(const HardwareInfo& hardware, AutoTuneProfile profile, std::uint32_t requested_threads, std::uint32_t requested_table_k) {
     TuneProfile tune;
+    std::uint32_t base_batch = 256u;
+    if (hardware.features & cpu_avx2) {
+        base_batch = 512u;
+    }
+    if (hardware.l3_cache >= (8u * 1024u * 1024u)) {
+        base_batch = 1024u;
+    }
     switch (profile) {
         case AutoTuneProfile::safe:
             tune.threads = std::max(1u, hardware.num_physical_cores / 2u);
-            tune.batch_size = 512u;
+            tune.batch_size = base_batch * 2u;
             break;
         case AutoTuneProfile::balanced:
             tune.threads = std::max(1u, hardware.num_physical_cores);
-            tune.batch_size = 1024u;
+            tune.batch_size = base_batch * 4u;
             break;
         case AutoTuneProfile::max:
             tune.threads = std::max(1u, hardware.num_cores);
-            tune.batch_size = 2048u;
+            tune.batch_size = base_batch * 8u;
             break;
     }
     if (requested_threads > 0) {
