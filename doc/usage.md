@@ -4,23 +4,18 @@ Este guia explica como operar o **Bchaves** de forma eficiente em buscas de long
 
 ## 💾 Persistência e Checkpoints
 
-O sistema salva o progresso automaticamente de forma segura.
-- **Formato:** Arquivos `.ckp` binários (mais compactos e resistentes a erros).
-- **Frequência:** A cada 60 segundos por padrão.
-- **Salvamento de Emergência:** Ao capturar um sinal de interrupção (`Ctrl+C`), o Bchaves tenta salvar o estado atual antes de encerrar as threads.
-- **Como retomar:** Basta rodar o mesmo comando. O sistema detecta o checkpoint e retoma a busca.
+O sistema salva o progresso automaticamente de forma segura em arquivos binários **Versão 5**.
+- **Formato:** O `.ckp` v5 agora armazena o estado exato dos chunks (`counter`, `step`, `size`), permitindo retomada determinística em buscas pseudoaleatórias.
+- **Incompatibilidade**: Checkpoints v3/v4 não são mais compatíveis. É necessário iniciar novas buscas ou deletar arquivos antigos se houver erro de versão.
+- **Frequência:** Geralmente a cada 10-60 segundos (configurável via CLI).
+- **Salvamento de Emergência:** Ao capturar `Ctrl+C`, o motor gera um checkpoint instantâneo compensando as threads em processamento.
 
-## 🔍 Tipos de Busca (Modo Address)
+A busca identifica P2PKH, P2SH e Bech32. Além disso, o motor oferece quatro estratégias de exploração:
 
-A busca automática identifica três tipos principais de endereços:
-1.  **P2PKH (Legacy)**: Endereços que começam com `1`.
-2.  **P2SH (Nested SegWit)**: Endereços que começam com `3`.
-3.  **Bech32 (Native SegWit)**: Endereços que começam com `bc1q` (v0).
-
-O binário `address` também permite filtrar por compressão:
-1.  **`-l compress`**: Procura apenas por chaves comprimidas.
-2.  **`-l uncompress`**: Procura apenas por chaves não-comprimidas.
-3.  **`-l both`**: Procura por ambos simultaneamente (padrão).
+1.  **`-R hybrid`**: **(Recomendado)** Usa bijeção LCG para varrer o range de forma desordenada mas completa (100% de cobertura).
+    -   **Uso de `-k`**: Controla o tamanho do "chunk". Ex: `-k 4096` cria blocos de 4 milhões de chaves, o que é ideal para minimizar o custo fixo de multiplicação ECC na GPU/CPU.
+2.  **`-R sequential/backward`**: Busca linear para ranges muito curtos onde o overhead do LCG não se justifica.
+3.  **Filtragem de Alvos (`-l`)**: `compress`, `uncompress` ou `both`.
 
 ## 📂 Organização de Arquivos de Alvo
 
@@ -33,13 +28,22 @@ O Bchaves espera arquivos de texto simples:
 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
+## ⚙️ Perfis de Hardware (-A)
+
+O Bchaves introduz o **Auto-Tune**, que configura o motor conforme o perfil de uso:
+- **`-A safe`**: Ideal para notebooks. Usa 50% dos núcleos físicos e lotes menores para manter a temperatura estável e o PC responsivo.
+- **`-A balanced`**: (Padrão) Usa 100% dos núcleos físicos. Ideal para servidores compartilhados.
+- **`-A max`**: Força bruta. Ativa Hyper-Threading (núcleos lógicos) e lotes massivos de memória para extrair o máximo de MH/s.
+
+---
+
 ## 🖥️ Verificando seu Hardware
 
 O Bchaves permite validar se as otimizações de CPU estão ativas:
 ```bash
 ./build/address --list-hardware
 ```
-Isso exibirá a contagem de cores, memória livre, cache L3 e suporte a **AVX2 / BMI2 / SHA-NI**.
+Exibe cores térmicos, RAM livre e extensões **AVX2 / SHA-NI / BMI2**.
 
 ## 🚀 Kangaroo Simplificado com Bits
 

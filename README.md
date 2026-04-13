@@ -74,6 +74,37 @@ Modo Baby-Step Giant-Step com otimização de cache e busca binária.
 
 ---
 
+## ⚙️ Perfis de Hardware (-A)
+
+O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o tamanho dos lotes de processamento conforme o hardware detectado.
+
+| Perfil | Estratégia | Cenário de Uso |
+|--------|------------|----------------|
+| `safe` | Metade dos núcleos físicos. | Notebooks, uso simultâneo com outras tarefas. |
+| `balanced` | **(Padrão)** Todos os núcleos físicos. | Servidores compartilhados, equilíbrio térmica/speed. |
+| `max` | Todos os núcleos lógicos (HT). | Rigs dedicadas, máxima performance possível. |
+
+### Exemplos de Tuning por Módulo
+
+```bash
+# [Address] Uso leve para não travar o PC (Notebook)
+./build/address target.txt -b 65 -R hybrid -A safe
+
+# [Address] Força total em servidor dedicado (HT ativo)
+./build/address target.txt -b 71 -R hybrid -A max
+
+# [Kangaroo] Busca de 75 bits com perfil equilibrado (Fisico 100%)
+./build/kangaroo targets.txt -b 75 -A balanced
+
+# [BSGS] Busca em range de 40 bits usando perfil máximo
+./build/bsgs pubkey.txt -b 40 -A max
+
+# Override manual: Perfil max, mas limitando a 8 threads explicitamente
+./build/address target.txt -b 71 -R hybrid -A max -t 8
+```
+
+---
+
 ## ⚙️ Parâmetros Técnicos (Address)
 
 - **`-k <multiplicador>`**: Define o tamanho do bloco processado por thread.

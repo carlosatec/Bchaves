@@ -12,9 +12,9 @@ Esta é a base do sistema, projetada para ter **zero alocações de heap** no lo
 
 ### 2. `engine/` (Motores de Busca)
 Contém a lógica pesada de "como encontrar a chave". É aqui que os algoritmos de busca são implementados.
-- **`address.cpp`**: Motor de busca sequencial baseado em endereços públicos.
-- **`bsgs.cpp`**: Algoritmo Baby-Step Giant-Step.
-- **`kangaroo.cpp`**: Algoritmo Pollard's Kangaroo.
+- **`address.cpp`**: Motor de busca de endereços unificado. Implementa o modo **Linear** (Standard) e o modo **Hybrid** (LCG Partitioned).
+- **`bsgs.cpp`**: Algoritmo Baby-Step Giant-Step com gerenciamento de shards e Cuckoo Filter.
+- **`kangaroo.cpp`**: Pollard's Kangaroo com modelo de frota distribuída.
 - **`app.hpp`**: Cabeçalho comum para estados globais do motor.
 
 ### 3. `modulos/` (Pontos de Entrada)
@@ -23,9 +23,9 @@ Arquivos pequenos que servem apenas como "wrappers" para criar binários diferen
 
 ### 4. `system/` (Utilidades do SO)
 Gerenciamento de recursos do sistema e I/O.
-- **`checkpoint.cpp`**: Persistência de progresso em arquivos `.ckp`.
-- **`hardware.cpp`**: Detecção avançada de CPU (CPUID Leaf 4), identificando **Caches L3**, núcleos físicos e extensões de instrução (**AVX2, BMI2, SHA**).
-- **`targets.cpp`**: Carregador de alvos polimórfico, tratando automaticamente endereços Legados, P2SH, SegWit e Hash160.
+- **`checkpoint.cpp`**: Persistência de progresso em arquivos binários **v5**. Suporta salvamento de estado de chunks para buscas pseudoaleatórias.
+- **`hardware.cpp`**: Detecção avançada de CPU (CPUID Leaf 4) e lógica de **Auto-Tune**. Calcula o número ideal de threads e lotes conforme o Perfil de Hardware (`safe`, `balanced`, `max`).
+- **`targets.cpp`**: Carregador de alvos polimórfico para endereços Legados, P2SH, SegWit e Hash160.
 
 ### 5. `traps/` e `puzzles/`
 - **`traps/`**: Diretório usado pelo motor Kangaroo para despejar dados da memória no disco (NVMe) quando a RAM está cheia.
@@ -37,14 +37,13 @@ Gerenciamento de recursos do sistema e I/O.
 
 ```mermaid
 graph TD
-    M[modulos/bsgs.cpp] --> E[engine/bsgs.cpp]
+    M[modulos/*.cpp] --> E[engine/*.cpp]
+    E --> H[system/hardware.cpp]
+    E --> CK[system/checkpoint.cpp]
     E --> C[core/secp256k1.hpp]
-    E --> CF[core/cuckoo.hpp]
-    E --> S[system/checkpoint.cpp]
     
-    A[modulos/address.cpp] --> EA[engine/address.cpp]
-    EA --> CA[core/address.hpp]
-    EA --> CM[core/secp256k1.hpp]
+    H -- "Auto-Tune Profile" --> E
+    CK -- "State Persist" --> E
 ```
 
 ## 🧩 Por que a separação?

@@ -169,7 +169,10 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
         }
     };
 
-    std::uint32_t num_threads = options.threads > 0 ? options.threads : 4;
+    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
+    std::uint32_t num_threads = tune.threads;
+    std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
+
     std::vector<std::thread> threads;
     for(uint32_t i=0; i<num_threads; ++i) threads.emplace_back(worker, i, num_threads);
 

@@ -8,14 +8,15 @@ Bem-vindo à documentação técnica do **Bchaves**. Este diretório contém det
     *   Explicação das camadas de código (`core`, `engine`, `modulos`).
     *   Fluxo de dependências.
 2.  **[Algoritmos e Pesquisa](algorithms.md)**
-    *   Funcionamento do BSGS com Cuckoo Filters.
-    *   Pollard's Kangaroo e gerenciamento de armadilhas.
-    *   Otimizações matemáticas (GLV/Endomorfismo).
-3.  **[Estruturas de Dados](data_structures.md)**
-    *   Uso de Cuckoo Filters para aceleração.
-    *   Implementação de BigInt e Curvas Elípticas.
+    *   **NOVO: Hybrid Chunk Search (LCG Bijection).**
+    *   BSGS com Cuckoo Filters e Flat Memory.
+    *   Pollard's Kangaroo e Architectural Fleet Model.
+    *   Otimizações (GLV, Batch Normalization).
+3.  **[Auto-Tune e Hardware](usage.md#A)**
+    *   Perfis de tuning inteligente (`safe`, `balanced`, `max`).
+    *   Detecção de Cache L3 e CPUID Leaf 4.
 4.  **[Guia de Uso Avançado](usage.md)**
-    *   Configurações de checkpoint.
+    *   Gerenciamento de **Checkpoint v5**.
     *   Gerenciamento de memória e dump para disco.
 
 ---
@@ -26,4 +27,5 @@ O Bchaves é estruturado para separar **Primitivos Matemáticos** de **Estratég
 
 - **Linguagem:** C++17
 - **Build System:** Makefile
-- **Paralelismo:** Multi-threading nativo (std::thread)
+- **Performance:** Multi-threading, SIMD (AVX2), Auto-Tune
+- **Checkpoint:** Versão 5 (Resumível e Atômica)

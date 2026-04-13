@@ -285,9 +285,9 @@ int run_address(const bchaves::system::AddressOptions& options) {
     bchaves::core::BigInt start, end;
     if (!resolve_range(options, start, end)) return 1;
 
-    std::uint32_t num_threads = options.threads;
-    if (num_threads == 0) num_threads = bchaves::system::detect_hardware().num_cores;
-    std::cout << "[+] Threads: " << num_threads << '\n';
+    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
+    std::uint32_t num_threads = tune.threads;
+    std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
 
     auto started = std::chrono::steady_clock::now();
     std::atomic<uint64_t> total_processed{0};
@@ -352,7 +352,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
     }
 
     std::vector<std::thread> workers;
-    static constexpr size_t kBatchSize = 256;
+    const size_t kBatchSize = tune.batch_size;
 
     if (options.mode == bchaves::system::SearchMode::hybrid) {
          for (std::uint32_t i = 0; i < num_threads; ++i) {
