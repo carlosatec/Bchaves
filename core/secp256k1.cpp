@@ -595,8 +595,8 @@ void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& 
     // n = order
     // b1 = [b11, b12], b2 = [b21, b22]
     static const BigInt n = kCurveOrder;
-    static const BigInt b12 = parse_hex("E79E57A8705B4A33830ACDC355AC8123");
-    static const BigInt b22 = parse_hex("7B102AF643C7196BA7D46BC882C60D1B");
+    [[maybe_unused]] static const BigInt b12 = parse_hex("E79E57A8705B4A33830ACDC355AC8123");
+    [[maybe_unused]] static const BigInt b22 = parse_hex("7B102AF643C7196BA7D46BC882C60D1B");
     
     // Decomposição simplificada mas precisa para k < n:
     // k2 = round(k * b12 / n)
@@ -617,8 +617,8 @@ void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& 
     
     // Como k * b22 pode ter 512 bits, usamos __int128 para aproximação 128 bits alto:
     // Usando uma aproximação de ponto fixo para evitar aritmética de 512 bits lenta:
-    unsigned __int128 k_high = ((unsigned __int128)k.limbs[3] << 64) | k.limbs[2];
-    unsigned __int128 n_high = ((unsigned __int128)n.limbs[3] << 64) | n.limbs[2];
+    [[maybe_unused]] unsigned __int128 k_high = ((unsigned __int128)k.limbs[3] << 64) | k.limbs[2];
+    [[maybe_unused]] unsigned __int128 n_high = ((unsigned __int128)n.limbs[3] << 64) | n.limbs[2];
     
     // k2 ≈ k >> 128 (aproximação grosseira para demonstração, refinável com as constantes b12/b22)
     k1 = k;

@@ -97,7 +97,7 @@ inline std::array<std::uint8_t, 20> ripemd160(const std::uint8_t* input, std::si
     std::uint32_t ar = h0, br = h1, cr = h2, dr = h3, er = h4;
 
     for (std::size_t j = 0; j < 80; ++j) {
-        std::uint32_t tl = ripemd_rotl(al + ripemd_f(j, bl, cl, dl) + x[r[j] + ripemd_k(j), s[j]) + el;
+        std::uint32_t tl = ripemd_rotl(al + ripemd_f(j, bl, cl, dl) + x[r[j]] + ripemd_k(j), s[j]) + el;
         al = el; el = dl; dl = ripemd_rotl(cl, 10u); cl = bl; bl = tl;
         std::uint32_t tr = ripemd_rotl(ar + ripemd_f(79u - j, br, cr, dr) + x[rp[j]] + ripemd_kp(j), sp[j]) + er;
         ar = er; er = dr; dr = ripemd_rotl(cr, 10u); cr = br; br = tr;

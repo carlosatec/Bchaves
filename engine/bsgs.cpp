@@ -193,9 +193,10 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     for (auto& t : threads) t.join();
 
     if (found.load()) {
-        std::cout << "\n[!!!] CHAVE ENCONTRADA (BSGS): " << bchaves::core::bigint_to_hex(solution) << "\n";
-        std::ofstream f("FOUND.txt", std::ios::app);
-        f << "BSGS Found: " << bchaves::core::bigint_to_hex(solution) << "\n";
+        bchaves::core::DerivedKeyInfo info;
+        if (bchaves::core::derive_key_info(solution, info)) {
+            bchaves::engine::report_found(info, "BSGS Search (bits:" + std::to_string(options.bits) + ")");
+        }
     }
 
     return 0;

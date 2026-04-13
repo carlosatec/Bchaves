@@ -10,8 +10,7 @@
 #pragma once
 
 #include "system/types.hpp"
-
-#include "system/types.hpp"
+#include "core/address.hpp"
 #include "system/hardware.hpp"
 #include "system/targets.hpp"
 #include "system/format.hpp"
@@ -29,5 +28,10 @@ struct AddressMatcher {
 int run_address(const bchaves::system::AddressOptions& options);
 int run_bsgs(const bchaves::system::BsgsOptions& options);
 int run_kangaroo(const bchaves::system::KangarooOptions& options);
+
+/**
+ * @brief Reporta uma chave encontrada: exibe na tela e salva em found.txt.
+ */
+void report_found(const bchaves::core::DerivedKeyInfo& info, const std::string& context);
 
 }  // namespace bchaves::engine

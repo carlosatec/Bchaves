@@ -100,22 +100,13 @@ bool check_hit(const AddressMatcher& matcher, const bchaves::core::DerivedKeyInf
     return false;
 }
 
-void print_found(const bchaves::core::DerivedKeyInfo& key_info,
-               const std::chrono::steady_clock::duration& elapsed,
-               std::uint32_t thread_id = 0) {
-    const auto seconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
-    std::cout << "[!] FOUND!\n";
-    std::cout << "    Private Key: " << bchaves::core::bigint_to_hex(key_info.private_key) << '\n';
-    std::cout << "    Address:   " << key_info.address_compressed << '\n';
-    std::cout << "    Time:     " << bchaves::system::format_duration(seconds) << '\n';
-}
+// Removido: agora usa engine::report_found
 
 void print_stats(uint64_t processed,
               const std::chrono::steady_clock::duration& elapsed,
-              int mode,
-              uint64_t forward = 0,
-              uint64_t backward = 0) {
+              [[maybe_unused]] int mode,
+              [[maybe_unused]] uint64_t forward = 0,
+              [[maybe_unused]] uint64_t backward = 0) {
     const auto seconds = std::max<uint64_t>(1,
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()));
     const double rate = static_cast<double>(processed) / static_cast<double>(seconds);
@@ -133,24 +124,22 @@ bool resolve_range(const bchaves::system::AddressOptions& options,
     }
     start = bchaves::core::BigInt(0);
     end = bchaves::core::BigInt(0);
-        
-        // start = 2^(bits-1)
-        if (options.bits == 1) {
-            start.limbs[0] = 1;
-        } else {
-            std::size_t bit_idx = options.bits - 1;
-            start.limbs[bit_idx / 64] = (1ULL << (bit_idx % 64));
-        }
-
-        // end = 2^(bits) - 1
-        for (std::uint32_t i = 0; i < options.bits; ++i) {
-            end.limbs[i / 64] |= (1ULL << (i % 64));
-        }
-        
-        std::cout << "[+] Bit range: " << options.bits << " bits\n";
-        return true;
+    
+    // start = 2^(bits-1)
+    if (options.bits == 1) {
+        start.limbs[0] = 1;
+    } else {
+        std::size_t bit_idx = options.bits - 1;
+        start.limbs[bit_idx / 64] = (1ULL << (bit_idx % 64));
     }
-    return false;
+
+    // end = 2^(bits) - 1
+    for (std::uint32_t i = 0; i < options.bits; ++i) {
+        end.limbs[i / 64] |= (1ULL << (i % 64));
+    }
+    
+    std::cout << "[+] Bit range: " << options.bits << " bits\n";
+    return true;
 }
 
 void run_hybrid_worker(
@@ -248,8 +237,7 @@ void run_hybrid_worker(
                                 bchaves::core::derive_key_info(batch_keys[k], found_key);
                                 found = true;
                                 if (!options.benchmark) {
-                                    std::ofstream f("FOUND.txt", std::ios::app);
-                                    f << "Private Key: " << bchaves::core::bigint_to_hex(batch_keys[k]) << "\n";
+                                    // Pulado: salvamento delegado ao report_found principal
                                 }
                             }
                         }
@@ -261,10 +249,10 @@ void run_hybrid_worker(
             p_jac = bchaves::core::add_points_mixed(p_jac, bG);
             cur_key += batch_step;
             total_processed.fetch_add(kBatch, std::memory_order_relaxed);
+            if (interrupt) return;
         }
     }
 }
-
 } // namespace
 
 int run_address(const bchaves::system::AddressOptions& options) {
@@ -527,7 +515,8 @@ int run_address(const bchaves::system::AddressOptions& options) {
     std::cout << "\n";
 
     if (found.load()) {
-        print_found(found_key, std::chrono::steady_clock::now() - started);
+        std::string ctx = "Address Search (bits:" + std::to_string(options.bits) + ")";
+        bchaves::engine::report_found(found_key, ctx);
         return 0;
     }
 

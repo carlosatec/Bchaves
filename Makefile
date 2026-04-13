@@ -14,7 +14,8 @@ BUILD_DIR := $(ROOT)/build
 ENGINE_SOURCES = \
 	engine/address.cpp \
 	engine/bsgs.cpp \
-	engine/kangaroo.cpp
+	engine/kangaroo.cpp \
+	engine/app.cpp
 
 COMMON_SOURCES = \
 	core/address.cpp \
@@ -25,7 +26,8 @@ COMMON_SOURCES = \
 	system/cli.cpp \
 	system/format.cpp \
 	system/hardware.cpp \
-	system/targets.cpp
+	system/targets.cpp \
+	system/io.cpp
 
 COMMON_FLAGS = -I$(ROOT)
 

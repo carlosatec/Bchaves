@@ -7,6 +7,8 @@
  * Author:     Carlos
  * License:    MIT (c) 2026
  */
+#include <vector>
+#include <cstring>
 #include "core/hash.hpp"
 #include "system/hardware.hpp"
 

@@ -129,6 +129,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     std::mutex sol_mtx;
 
     auto worker = [&](int thread_id) {
+        (void)thread_id;
         // Fleet de 64 Kangaroos por Core (Etapa 2 da Arquitetura)
         struct KangarooMod {
             bchaves::core::PointJacobian p_jac;
@@ -269,9 +270,10 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     std::cout << "\n";
 
     if (found.load()) {
-        std::cout << "[!!!] CHAVE ENCONTRADA: " << bchaves::core::bigint_to_hex(solution) << "\n";
-        std::ofstream f("FOUND.txt", std::ios::app);
-        f << "Kangaroo Found: " << bchaves::core::bigint_to_hex(solution) << "\n";
+        bchaves::core::DerivedKeyInfo info;
+        if (bchaves::core::derive_key_info(solution, info)) {
+            bchaves::engine::report_found(info, "Kangaroo Search (range:" + options.range + ")");
+        }
     }
 
     return 0;
