@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Ponto de entrada (CLI) para o motor BSGS.
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "engine/app.hpp"
 #include "system/cli.hpp"
 #include <iostream>

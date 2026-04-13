@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Definições de tipos comuns, enums e estruturas de dados do sistema.
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #pragma once
 
 #include <array>

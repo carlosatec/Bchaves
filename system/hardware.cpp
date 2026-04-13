@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Detecção de hardware e lógica de Auto-Tune (CPU, RAM, Cache).
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "system/hardware.hpp"
 
 #include <algorithm>

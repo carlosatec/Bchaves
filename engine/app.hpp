@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Definições globais e cabeçalho base para motores de busca.
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #pragma once
 
 #include "system/types.hpp"

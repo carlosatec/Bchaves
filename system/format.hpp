@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Definições e interfaces para utilitários de formatação.
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #pragma once
 
 #include "system/types.hpp"

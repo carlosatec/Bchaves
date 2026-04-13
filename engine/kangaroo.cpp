@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Algoritmo Pollard's Kangaroo (Architectural Fleet Model).
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "engine/app.hpp"
 #include "core/secp256k1.hpp"
 #include "core/hash.hpp"

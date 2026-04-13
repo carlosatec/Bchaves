@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Sistema de persistência e recuperação de progresso (Checkpoints).
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "system/checkpoint.hpp"
 
 #include "core/hash.hpp"

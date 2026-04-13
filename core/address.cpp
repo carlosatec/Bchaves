@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: Implementação de derivação de endereços Bitcoin (Legacy, P2SH, SegWit).
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "core/address.hpp"
 
 #include "core/hash.hpp"

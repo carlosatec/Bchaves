@@ -1,5 +1,10 @@
-# Makefile para Bchaves
-# Usage: make address | make bsgs | make kangaroo | make clean
+# Bchaves: Bitcoin Performance Engine
+# 
+# Descrição: Sistema de build multi-alvo para Windows e Linux.
+# 
+# Repository: https://github.com/carlosatec/Bchaves
+# Author:     Carlos
+# License:    MIT (c) 2026
 
 CXX ?= g++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra

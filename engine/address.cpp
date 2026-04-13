@@ -1,3 +1,12 @@
+/*
+ * Bchaves: Bitcoin Performance Engine
+ * 
+ * Descrição: O núcleo do motor de busca de endereços (Linear + Hybrid Chunk).
+ * 
+ * Repository: https://github.com/carlosatec/Bchaves
+ * Author:     Carlos
+ * License:    MIT (c) 2026
+ */
 #include "engine/app.hpp"
 
 #include "core/address.hpp"
