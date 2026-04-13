@@ -4,8 +4,10 @@ O **Bchaves** é uma ferramenta de busca de chaves privadas Bitcoin de ultra-alt
 
 ---
 
-## 📖 Documentação Técnica
-Para detalhes aprofundados sobre a arquitetura, algoritmos e uso avançado, consulte a pasta **[/doc](doc/README.md)**.
+## 🚀 Novidades na v5
+- **Motor Hybrid Chunk**: Busca pseudoaleatória com cobertura de 100% via bijeção LCG.
+- **Checkpoint v5**: Estado de persistência robusto e resumível sem perdas.
+- **Matemática de 256 bits**: Divisões exatas para qualquer bit range.
 
 ---
 
@@ -20,55 +22,73 @@ cd Bchaves
 make all
 ```
 
-| Binário | Funcionalidade | Cenário Ideal |
-|---------|----------------|---------------|
-| `build/address` | Busca de Endereço Clássica | Puzzles de baixo-médio bit range (ex: 1-130). Suporta **SegWit**. |
-| `build/bsgs` | Baby-Step Giant-Step | Quando você busca em ranges curtos com alta densidade de Baby Steps. |
-| `build/kangaroo` | Pollard's Kangaroo | Range enorme com suporte a pontos distinguidos e disco. |
-
 ---
 
 ## 🎮 Motores de Busca
 
-### 1. Verificação de Hardware
-Antes de começar, veja as capacidades da sua CPU:
+### 1. Address Mode (`build/address`)
+O motor principal para exploração de puzzles por bits.
+
+#### Modos de Exploração (`-R`)
+| Modo | Descrição | Cenário Ideal |
+|------|-----------|---------------|
+| `hybrid` | **(Recomendado)** Explorador pseudoaleatório particionado. | Puzzle 30-160 |
+| `sequential` | Busca linear incremental (`start` → `end`). | Ranges pequenos (< 30 bits) |
+| `backward` | Busca linear decrescente (`end` → `start`). | Ranges pequenos |
+| `both` | Busca bidirecional simultânea. | Verificação de extremidades |
+
+#### Exemplo: Puzzle 71 com Modo Hybrid
 ```bash
-./build/address --list-hardware
+./build/address puzzles/71.txt -b 71 -R hybrid -k 4096 -t 12
+```
+*   `-b 71`: Define o bit range do puzzle.
+*   `-R hybrid`: Ativa o motor pseudoaleatório com cobertura total.
+*   `-k 4096`: Multiplicador de chunk (4M chaves/bloco). Minimiza o custo ECC.
+*   `-t 12`: Utiliza 12 threads de processamento.
+
+#### Outros Exemplos
+```bash
+# Busca sequencial de 40 bits com endereços não-comprimidos
+./build/address targets.txt -b 40 -R sequential -l uncompress
+
+# Teste de throughput total (sem salvar arquivos)
+./build/address targets.txt -b 50 -R hybrid -k 1024 --benchmark
 ```
 
-### 2. Modo Address (Multi-thread)
-Busca chaves privadas a partir de endereços. Suporta **bc1**, **3...** e **1...**.
-```bash
-# Busca 71 bits usando modo paralelo (both) e 1threads
-./build/address puzzles/71.txt -b 71 -R both -t 12
-```
+---
 
-### 3. Modo Kangaroo (Discrete Log)
-Agora com suporte simplificado por bits:
+### 2. Kangaroo Mode (`build/kangaroo`)
+Baseado no algoritmo de Pollard's Kangaroo para Logaritmo Discreto.
 ```bash
 # Busca em range de 75 bits (calcula 2^74 até 2^75-1 automaticamente)
 ./build/kangaroo targets.txt -b 75 -t 12
 ```
 
-### 4. Modo BSGS (Zero Lock Contention)
-Utiliza busca binária em shards ordenados para eliminar travas entre threads.
+---
+
+### 3. BSGS Mode (`build/bsgs`)
+Modo Baby-Step Giant-Step com otimização de cache e busca binária.
 ```bash
 ./build/bsgs pubkey.txt -b 40 -t 12
 ```
 
 ---
 
-## 🧠 Otimizações de Memória
+## ⚙️ Parâmetros Técnicos (Address)
 
-- **Zero-Allocation**: Hot-loops redesenhados para evitar alocações de heap, minimizando pressão no GC e latência de cache.
-- **Sharding Manager**: Divide a memória em 16 "cofres" independentes para eliminar contenção.
+- **`-k <multiplicador>`**: Define o tamanho do bloco processado por thread.
+    - `k=1024`: 1 milhão de chaves (Recomendado para puzzles pequenos 40-60 bits).
+    - `k=4096`: 4 milhões de chaves (Recomendado para puzzles grandes 70+ bits).
+- **`-l <tipo>`**: Filtro de compressão de endereço (`compress`, `uncompress`, `both`).
+- **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
 
 ---
 
-## 💾 Persistência de Dados
+## 💾 Persistência e Checkpoints
 
-- **Found.txt**: Qualquer descoberta é salva imediatamente com HEX, WIF e Address conforme detectado.
-- **Checkpoints de Emergência**: Ao pressionar `Ctrl+C`, o sistema tenta salvar o estado atual instantaneamente para retomada futura.
+- **Checkpoint v5**: Agora o checkpoint é atômico e salva o contador exato de chunks processados.
+- **Resumo Automático**: Ao reiniciar uma busca interrompida, o Bchaves detecta o arquivo `.ckp` e retoma exatamente de onde parou.
+- **FOUND.txt**: Descobertas são salvas em log com a Chave Privada em HEX.
 
 ---
 

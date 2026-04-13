@@ -12,7 +12,7 @@ namespace bchaves::system {
 namespace {
 
 constexpr char kMagic[] = {'B', 'C', 'H', 'V'};
-constexpr std::uint32_t kVersion = 4u;
+constexpr std::uint32_t kVersion = 5u;
 
 void append_u32(std::vector<std::uint8_t>& buffer, std::uint32_t value) {
     buffer.push_back(static_cast<std::uint8_t>(value & 0xffu));
@@ -88,7 +88,10 @@ bool save_checkpoint(const std::filesystem::path& file, const CheckpointState& s
     buffer.insert(buffer.end(), state.current_aux.begin(), state.current_aux.end());
     append_u64(buffer, state.progress_primary);
     append_u64(buffer, state.progress_secondary);
-    append_u64(buffer, state.random_seed);
+    append_u64(buffer, state.hybrid_chunk_counter);
+    append_u64(buffer, state.hybrid_chunk_step);
+    append_u64(buffer, state.hybrid_chunk_size);
+    append_u64(buffer, state.hybrid_total_chunks);
     append_u32(buffer, bchaves::core::crc32(buffer));
 
     std::ofstream out(file, std::ios::binary);
@@ -133,8 +136,8 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
 
     std::size_t offset = 4;
     const std::uint32_t version = read_u32(payload, offset);
-    if (version != 3u && version != kVersion) {
-        error = "versao de checkpoint nao suportada";
+    if (version != kVersion) {
+        error = "versao de checkpoint nao suportada (requer v5)";
         return false;
     }
     state = {};
@@ -158,7 +161,7 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
     offset += state.range_end.size();
     std::memcpy(state.current.data(), payload.data() + offset, state.current.size());
     offset += state.current.size();
-    if (version >= 4u) {
+    if (version >= 5u) {
         if (offset + state.current_aux.size() + 32u > payload.size()) {
             error = "checkpoint truncado ao ler estado extendido";
             return false;
@@ -167,7 +170,10 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
         offset += state.current_aux.size();
         state.progress_primary = read_u64(payload, offset);
         state.progress_secondary = read_u64(payload, offset);
-        state.random_seed = read_u64(payload, offset);
+        state.hybrid_chunk_counter = read_u64(payload, offset);
+        state.hybrid_chunk_step = read_u64(payload, offset);
+        state.hybrid_chunk_size = read_u64(payload, offset);
+        state.hybrid_total_chunks = read_u64(payload, offset);
     }
     return true;
 }

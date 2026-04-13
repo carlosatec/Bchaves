@@ -23,7 +23,7 @@ enum class SearchMode {
     sequential = 0,
     backward,
     both,
-    random,
+    hybrid,
 };
 
 enum class SearchType {
@@ -105,6 +105,7 @@ struct AddressOptions : CommonOptions {
     SearchType type = SearchType::both;
     std::uint64_t limit = 0;
     std::uint32_t bits = 0;
+    std::uint32_t chunk_k = 0;   // -k: chunk_size = 1024 * chunk_k (min 1M)
 };
 
 struct BsgsOptions : CommonOptions {
@@ -118,7 +119,7 @@ struct KangarooOptions : CommonOptions {
 };
 
 struct CheckpointState {
-    std::uint32_t format_version = 4;
+    std::uint32_t format_version = 5;
     std::string algorithm;
     SearchMode mode = SearchMode::sequential;
     SearchType type = SearchType::both;
@@ -131,7 +132,11 @@ struct CheckpointState {
     std::array<std::uint8_t, 32> current_aux{};
     std::uint64_t progress_primary = 0;
     std::uint64_t progress_secondary = 0;
-    std::uint64_t random_seed = 0;
+    // v5: campos dedicados para modo hybrid
+    std::uint64_t hybrid_chunk_counter = 0;
+    std::uint64_t hybrid_chunk_step    = 0;
+    std::uint64_t hybrid_chunk_size    = 0;
+    std::uint64_t hybrid_total_chunks  = 0;
 };
 
 std::string to_string(TargetType value);

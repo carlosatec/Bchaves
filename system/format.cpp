@@ -75,7 +75,7 @@ std::string to_string(SearchMode value) {
         case SearchMode::sequential: return "sequential";
         case SearchMode::backward: return "backward";
         case SearchMode::both: return "both";
-        case SearchMode::random: return "random";
+        case SearchMode::hybrid: return "hybrid";
         default: return "unknown";
     }
 }

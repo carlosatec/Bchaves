@@ -29,7 +29,7 @@ SearchMode parse_mode(const std::string& value) {
     if (lower == "sequential") return SearchMode::sequential;
     if (lower == "backward") return SearchMode::backward;
     if (lower == "both") return SearchMode::both;
-    if (lower == "random") return SearchMode::random;
+    if (lower == "hybrid") return SearchMode::hybrid;
     throw std::runtime_error("Modo de busca invalido: " + value);
 }
 
@@ -101,6 +101,8 @@ bool parse_address_cli(int argc, char** argv, AddressOptions& options, std::stri
                 options.type = parse_type(require_value(argc, argv, i, arg));
             } else if (arg == "-b") {
                 options.bits = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
+            } else if (arg == "-k") {
+                options.chunk_k = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
             } else if (!arg.empty() && arg[0] != '-') {
                 options.target_path = arg;
             } else {
@@ -109,6 +111,10 @@ bool parse_address_cli(int argc, char** argv, AddressOptions& options, std::stri
         }
         if (options.bits == 0 || options.bits > 256) {
             error = "Use -b <bits> (1-256)";
+            return false;
+        }
+        if (options.mode == SearchMode::hybrid && options.chunk_k == 0) {
+            error = "Modo hybrid requer -k <multiplicador> (ex: -k 1024 = 1M chaves/chunk)";
             return false;
         }
     } catch (const std::exception& ex) {
@@ -182,7 +188,8 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
 std::string address_help() {
     return "Uso: ./address <arquivo> -b <bits> [opcoes]\n"
            "  -b <n>         bit range (e.g., 71 for puzzle 71)\n"
-           "  -R <modo>      sequential|backward|both\n"
+           "  -R <modo>      sequential|backward|both|hybrid\n"
+           "  -k <n>         chunk multiplier (hybrid): chunk_size = 1024 x n, min 1M\n"
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
