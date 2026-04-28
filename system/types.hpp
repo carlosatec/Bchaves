@@ -125,6 +125,9 @@ struct BsgsOptions : CommonOptions {
 
 struct KangarooOptions : CommonOptions {
     std::string range;
+    bool no_load = false;         // --no-load: pula o Cold Boot de armadilhas
+    uint32_t wild_ratio  = 50;    // --wild <N>: % de cangurus selvagens (default 50%)
+    uint32_t tame_ratio  = 50;    // --tame <N>: % de cangurus domesticados (default 50%)
 };
 
 struct CheckpointState {

@@ -174,9 +174,17 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
                 options.range = require_value(argc, argv, i, arg);
             } else if (arg == "-b") {
                 uint32_t bits = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
-                // Converte bits para range hexadecimal (ex: 71 -> 4000...:7fff...)
-                // Isso será tratado no engine/kangaroo.cpp se options.range estiver vazio mas bits > 0
                 options.range = "bits:" + std::to_string(bits);
+            } else if (arg == "--no-load") {
+                options.no_load = true;
+            } else if (arg == "--wild") {
+                options.wild_ratio = static_cast<uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
+                if (options.wild_ratio > 100) options.wild_ratio = 100;
+                options.tame_ratio = 100 - options.wild_ratio;
+            } else if (arg == "--tame") {
+                options.tame_ratio = static_cast<uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
+                if (options.tame_ratio > 100) options.tame_ratio = 100;
+                options.wild_ratio = 100 - options.tame_ratio;
             } else if (!arg.empty() && arg[0] != '-') {
                 options.target_path = arg;
             } else {
@@ -227,7 +235,10 @@ std::string kangaroo_help() {
            "  -r <start:end> range customizado em hexadecimal\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
-           "  --list-hardware exibe informações da CPU e encerra\n"
+           "  --wild <N>     % de cangurus selvagens (default: 50). Ajusta estrategia de busca.\n"
+           "  --tame <N>     % de cangurus domesticados (default: 50). Ajusta estrategia de busca.\n"
+           "  --no-load      pula o carregamento de armadilhas do disco (para benchmarks rapidos)\n"
+           "  --list-hardware exibe informacoes da CPU e encerra\n"
            "  --benchmark    executa sem gravar checkpoint/FOUND.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"

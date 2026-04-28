@@ -304,8 +304,12 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // ============================================================
     // Fase 1: Cold Boot - Carregar armadilhas salvas anteriormente
     // ============================================================
-    uint64_t preloaded = load_traps_from_disk(shards, *trap_filter, range_start, range_end);
-    total_traps_in_ram.store(preloaded);
+    if (options.no_load) {
+        std::cout << "[+] --no-load ativado: pulando carregamento de armadilhas do disco.\n";
+    } else {
+        uint64_t preloaded = load_traps_from_disk(shards, *trap_filter, range_start, range_end);
+        total_traps_in_ram.store(preloaded);
+    }
 
     // ============================================================
     // Worker: Fleet de 64 Kangaroos por Thread
@@ -321,8 +325,10 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         };
         std::array<KangarooMod, 64> fleet;
         
+        // Wild/Tame ratio configurável via --wild / --tame
+        const uint32_t wild_count = static_cast<uint32_t>((64 * options.wild_ratio) / 100);
         for(int i=0; i<64; ++i) {
-            fleet[i].is_wild = (i % 2 == 0);
+            fleet[i].is_wild = (static_cast<uint32_t>(i) < wild_count);
             bchaves::core::Secp256k1Point start_p = fleet[i].is_wild ? target_y : bchaves::core::secp256k1_multiply(range_end);
             fleet[i].distance = fleet[i].is_wild ? bchaves::core::BigInt(0) : range_end;
             

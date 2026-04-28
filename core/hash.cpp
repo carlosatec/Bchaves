@@ -247,6 +247,12 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
 
         #define SHR(x, n) _mm256_srli_epi32(x, n)
         #define ROTR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - n))
+        // Limpa macros definidas em ripemd160.hpp para evitar warnings de redefinição
+        #undef XOR
+        #undef AND
+        #undef ANDNOT
+        #undef OR
+        #undef ADD
         #define XOR(a, b) _mm256_xor_si256(a, b)
         #define AND(a, b) _mm256_and_si256(a, b)
         #define ANDNOT(a, b) _mm256_andnot_si256(a, b)

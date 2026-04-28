@@ -92,32 +92,7 @@ bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher) {
     return !matcher.hashes.empty();
 }
 
-bool check_hit(const AddressMatcher& matcher, const bchaves::core::DerivedKeyInfo& key_info) {
-    for (const auto& target_hash : matcher.hashes) {
-        if (key_info.address_payload_compressed.size() == 20) {
-            if (std::memcmp(key_info.address_payload_compressed.data(), target_hash.data(), 20) == 0) return true;
-        }
-        if (key_info.address_payload_uncompressed.size() == 20) {
-            if (std::memcmp(key_info.address_payload_uncompressed.data(), target_hash.data(), 20) == 0) return true;
-        }
-    }
-    return false;
-}
 
-// Removido: agora usa engine::report_found
-
-void print_stats(uint64_t processed,
-              const std::chrono::steady_clock::duration& elapsed,
-              [[maybe_unused]] int mode,
-              [[maybe_unused]] uint64_t forward = 0,
-              [[maybe_unused]] uint64_t backward = 0) {
-    const auto seconds = std::max<uint64_t>(1,
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()));
-    const double rate = static_cast<double>(processed) / static_cast<double>(seconds);
-    std::cout << "[+] Keys: " << bchaves::system::format_key_count(static_cast<double>(processed))
-              << " | Rate: " << bchaves::system::format_rate(rate)
-              << " | Time: " << bchaves::system::format_duration(seconds) << '\n';
-}
 
 bool resolve_range(const bchaves::system::AddressOptions& options,
                 bchaves::core::BigInt& start,
