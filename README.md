@@ -55,7 +55,7 @@ O motor principal para exploração de puzzles por bits.
 ./build/address targets.txt -b 40 -R sequential -l uncompress
 
 # Teste de throughput total (sem salvar arquivos)
-./build/address targets.txt -b 50 -R hybrid -k 1024 --benchmark
+./build/address targets.txt -b 50 -R hybrid -k 4096 --benchmark
 ```
 
 ---
@@ -113,6 +113,8 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
 - **`-k <multiplicador>`**: Define o tamanho do bloco processado por thread.
     - `k=1024`: 1 milhão de chaves (Recomendado para puzzles pequenos 40-60 bits).
     - `k=4096`: 4 milhões de chaves (Recomendado para puzzles grandes 70+ bits).
+    - `k=8192`: 8 milhões de chaves (Máxima diluição do custo ECC para puzzles 80+ bits).
+- **Aceleração via -k**: Valores maiores de `-k` reduzem a frequência de cálculos pesados de curva elíptica na inicialização de cada chunk, aumentando a taxa líquida de Keys/s.
 - **`-l <tipo>`**: Filtro de compressão de endereço (`compress`, `uncompress`, `both`).
 - **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
 - **Aceleração de Hardware**: Detecta automaticamente suporte a AVX2 e SHA-NI para o pipeline de busca.
