@@ -194,33 +194,32 @@ void run_hybrid_worker(
 
             bchaves::core::batch_normalize(batch_p, batch_affine, kBatch);
 
-            bool use_batch = bchaves::core::Sha256::supports_avx2();
-            if (use_batch) {
-                std::uint8_t batch_sha_out[8][32];
-                std::uint8_t batch_ripemd_out[8][20];
-                std::uint8_t* sha_ptr[8];
-                const std::uint8_t* sha_in_ptr[8];
-                std::uint8_t* ripemd_ptr[8];
-                const std::uint8_t* data_ptr[8];
-                alignas(32) std::uint8_t pub_bufs[8][65];
+            std::uint8_t batch_sha_out[8][32];
+            std::uint8_t batch_ripemd_out[8][20];
+            std::uint8_t* sha_ptr[8];
+            const std::uint8_t* sha_in_ptr[8];
+            std::uint8_t* ripemd_ptr[8];
+            const std::uint8_t* data_ptr[8];
+            alignas(32) std::uint8_t pub_bufs[8][65];
 
-                for (size_t k = 0; k < kBatch; k += 8) {
+            for (size_t k = 0; k < kBatch; k += 8) {
+                auto check_batch = [&](bool compress) {
+                    size_t p_len = compress ? 33 : 65;
                     for(int u=0; u<8; ++u) {
-                        bchaves::core::serialize_pubkey(batch_affine[k+u], options.type != bchaves::system::SearchType::uncompress, pub_bufs[u]);
+                        bchaves::core::serialize_pubkey(batch_affine[k+u], compress, pub_bufs[u]);
                         data_ptr[u] = pub_bufs[u];
                         sha_ptr[u] = batch_sha_out[u];
                         sha_in_ptr[u] = batch_sha_out[u];
                         ripemd_ptr[u] = batch_ripemd_out[u];
                     }
                     
-                    // Mangueira de Alta Pressão: AVX2 direto para AVX2
-                    bchaves::core::Sha256::hash8(data_ptr, 33, sha_ptr); 
+                    bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr); 
                     bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
 
                     for(int u=0; u<8; ++u) {
                         uint64_t filter_hash;
                         std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
-                        if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue; // Fast reject
+                        if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
 
                         for (const auto& target : matcher.hashes) {
                             if (std::memcmp(batch_ripemd_out[u], target.data(), 20) == 0) {
@@ -236,33 +235,16 @@ void run_hybrid_worker(
                             }
                         }
                     }
-                    if (found.load()) break;
+                };
+
+                if (options.type == bchaves::system::SearchType::compress || options.type == bchaves::system::SearchType::both) {
+                    check_batch(true);
                 }
-            } else {
-                    for (size_t k = 0; k < kBatch; ++k) {
-                        std::uint8_t pub[65];
-                        size_t p_len = bchaves::core::serialize_pubkey(batch_affine[k], options.type != bchaves::system::SearchType::uncompress, pub);
-                        const auto sha  = bchaves::core::sha256(pub, p_len);
-                        const auto h160 = bchaves::core::ripemd160(sha.data(), sha.size());
+                if (options.type == bchaves::system::SearchType::uncompress || options.type == bchaves::system::SearchType::both) {
+                    check_batch(false);
+                }
 
-                        uint64_t filter_hash;
-                        std::memcpy(&filter_hash, h160.data(), sizeof(uint64_t));
-                        if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue; // Fast reject
-
-                        for (const auto& target : matcher.hashes) {
-                            if (std::memcmp(h160.data(), target.data(), 20) == 0) {
-                                std::lock_guard<std::mutex> lock(found_mutex);
-                                if (!found.load()) {
-                                    bchaves::core::derive_key_info(batch_keys[k], found_key);
-                                    found = true;
-                                    if (!options.benchmark) {
-                                        // Pulado: salvamento delegado ao report_found principal
-                                    }
-                                }
-                            }
-                        }
-                        if (found.load()) break;
-                    }
+                if (found.load(std::memory_order_relaxed)) break;
             }
 
             p_jac = bchaves::core::add_points_mixed(p_jac, bG);
@@ -411,24 +393,34 @@ int run_address(const bchaves::system::AddressOptions& options) {
                     bchaves::core::batch_normalize(batch_p, batch_affine, kBatchSize);
 
                     std::uint8_t batch_sha_out[8][32];
+                    std::uint8_t batch_ripemd_out[8][20];
                     std::uint8_t* sha_ptr[8];
+                    const std::uint8_t* sha_in_ptr[8];
+                    std::uint8_t* ripemd_ptr[8];
                     const std::uint8_t* data_ptr[8];
-                    std::uint8_t pub_bufs[8][65];
-                    bool use_batch = bchaves::core::Sha256::supports_avx2();
+                    alignas(32) std::uint8_t pub_bufs[8][65];
 
                     for (size_t k = 0; k < kBatchSize; k += 8) {
-                        if (use_batch) {
+                        auto check_batch = [&](bool compress) {
+                            size_t p_len = compress ? 33 : 65;
                             for(int u=0; u<8; ++u) {
-                                bchaves::core::serialize_pubkey(batch_affine[k+u], options.type != bchaves::system::SearchType::uncompress, pub_bufs[u]);
+                                bchaves::core::serialize_pubkey(batch_affine[k+u], compress, pub_bufs[u]);
                                 data_ptr[u] = pub_bufs[u];
                                 sha_ptr[u] = batch_sha_out[u];
+                                sha_in_ptr[u] = batch_sha_out[u];
+                                ripemd_ptr[u] = batch_ripemd_out[u];
                             }
-                            bchaves::core::Sha256::hash8(data_ptr, 33, sha_ptr); 
+                            
+                            bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr); 
+                            bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
 
                             for(int u=0; u<8; ++u) {
-                                const auto h160 = bchaves::core::ripemd160(batch_sha_out[u], 32);
+                                uint64_t filter_hash;
+                                std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
+                                if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+
                                 for (const auto& target : matcher.hashes) {
-                                    if (std::memcmp(h160.data(), target.data(), 20) == 0) {
+                                    if (std::memcmp(batch_ripemd_out[u], target.data(), 20) == 0) {
                                         std::lock_guard<std::mutex> lock(found_mutex);
                                         if (!found.load()) {
                                             bchaves::core::derive_key_info(batch_keys[k+u], found_key);
@@ -444,30 +436,16 @@ int run_address(const bchaves::system::AddressOptions& options) {
                                     }
                                 }
                             }
-                        } else {
-                            for(int u=0; u<8; ++u) {
-                                std::uint8_t pub_buf[65];
-                                size_t p_len = bchaves::core::serialize_pubkey(batch_affine[k+u], options.type != bchaves::system::SearchType::uncompress, pub_buf);
-                                const auto sha = bchaves::core::sha256(pub_buf, p_len);
-                                const auto h160 = bchaves::core::ripemd160(sha.data(), sha.size());
-                                for (const auto& target : matcher.hashes) {
-                                    if (std::memcmp(h160.data(), target.data(), 20) == 0) {
-                                        std::lock_guard<std::mutex> lock(found_mutex);
-                                        if (!found.load()) {
-                                            bchaves::core::derive_key_info(batch_keys[k+u], found_key);
-                                            found = true;
-                                            if (!options.benchmark) {
-                                                std::ofstream f("FOUND.txt", std::ios::app);
-                                                f << "Private Key (HEX): " << bchaves::core::bigint_to_hex(batch_keys[k+u]) << "\n";
-                                                f << "Address (Comp):    " << found_key.address_compressed << "\n";
-                                                f << "--------------------------------------------------------\n";
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        };
+
+                        if (options.type == bchaves::system::SearchType::compress || options.type == bchaves::system::SearchType::both) {
+                            check_batch(true);
                         }
-                        if (found.load()) break;
+                        if (options.type == bchaves::system::SearchType::uncompress || options.type == bchaves::system::SearchType::both) {
+                            check_batch(false);
+                        }
+
+                        if (found.load(std::memory_order_relaxed)) break;
                     }
                     
                     total_processed += kBatchSize;

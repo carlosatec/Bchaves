@@ -6,6 +6,7 @@ O **Bchaves** é uma ferramenta de busca de chaves privadas Bitcoin de ultra-alt
 
 ## 🚀 Novidades: Ultra Performance Update
 - **Motor SIMD AVX2 Nativo**: Processamento real de 8 hashes SHA-256 e RIPEMD-160 em paralelo por ciclo de clock.
+- **Suporte Multi-Formato Full**: Busca simultânea de endereços `compress`, `uncompress` e `both` sem perda de performance ou risco de falsos-negativos.
 - **Filtro Cuckoo Integrado**: Busca probabilística de alvos em tempo constante O(1), eliminando gargalos de I/O.
 - **Zero-Copy Pipeline**: Arquitetura de dados otimizada que reduz latência de cache e evita cópias desnecessárias na RAM.
 - **Motor Hybrid Chunk**: Busca pseudoaleatória com cobertura de 100% via bijeção LCG.
