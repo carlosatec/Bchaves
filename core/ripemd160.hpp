@@ -13,6 +13,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <cstring>
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 namespace bchaves::core {
 
@@ -116,6 +121,130 @@ inline std::array<std::uint8_t, 20> ripemd160(const std::uint8_t* input, std::si
 
 inline std::array<std::uint8_t, 20> ripemd160(const std::vector<std::uint8_t>& input) {
     return ripemd160(input.data(), input.size());
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+inline void ripemd160_batch8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (length == 32) {
+        alignas(32) std::uint32_t X[16][8];
+        for (int i = 0; i < 8; ++i) {
+            const std::uint32_t* p = (const std::uint32_t*)data[i];
+            X[0][i] = p[0]; X[1][i] = p[1]; X[2][i] = p[2]; X[3][i] = p[3];
+            X[4][i] = p[4]; X[5][i] = p[5]; X[6][i] = p[6]; X[7][i] = p[7];
+            X[8][i] = 0x00000080u;
+            X[9][i] = 0; X[10][i] = 0; X[11][i] = 0; X[12][i] = 0; X[13][i] = 0;
+            X[14][i] = 256;
+            X[15][i] = 0;
+        }
+
+        #define ADD _mm256_add_epi32
+        #define XOR _mm256_xor_si256
+        #define AND _mm256_and_si256
+        #define OR _mm256_or_si256
+        #define ANDNOT _mm256_andnot_si256
+
+        #define ROTL_VAR(x, n) ( (n) == 0 ? (x) : OR(_mm256_sllv_epi32(x, _mm256_set1_epi32(n)), _mm256_srlv_epi32(x, _mm256_set1_epi32(32 - (n)))) )
+        #define ROTL10(x) OR(_mm256_slli_epi32(x, 10), _mm256_srli_epi32(x, 22))
+
+        #define F0(x, y, z) XOR(x, XOR(y, z))
+        #define F1(x, y, z) OR(AND(x, y), ANDNOT(x, z))
+        #define F2(x, y, z) XOR(OR(x, XOR(y, _mm256_set1_epi32(0xFFFFFFFFu))), z)
+        #define F3(x, y, z) OR(AND(x, z), AND(y, XOR(z, _mm256_set1_epi32(0xFFFFFFFFu))))
+        #define F4(x, y, z) XOR(x, OR(y, XOR(z, _mm256_set1_epi32(0xFFFFFFFFu))))
+
+        __m256i h0 = _mm256_set1_epi32(0x67452301u);
+        __m256i h1 = _mm256_set1_epi32(0xefcdab89u);
+        __m256i h2 = _mm256_set1_epi32(0x98badcfeu);
+        __m256i h3 = _mm256_set1_epi32(0x10325476u);
+        __m256i h4 = _mm256_set1_epi32(0xc3d2e1f0u);
+
+        __m256i al = h0, bl = h1, cl = h2, dl = h3, el = h4;
+        __m256i ar = h0, br = h1, cr = h2, dr = h3, er = h4;
+
+        static constexpr std::uint32_t r[80] = {
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+            3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+            1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+            4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+        };
+        static constexpr std::uint32_t rp[80] = {
+            5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+            6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+            15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+            8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+            12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+        };
+        static constexpr std::uint32_t s[80] = {
+            11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+            7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+            11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+            11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+            9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+        };
+        static constexpr std::uint32_t sp[80] = {
+            8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+            9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+            9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+            15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+            8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+        };
+
+        for (std::size_t j = 0; j < 80; ++j) {
+            __m256i fj, fjp, kj, kjp;
+            if (j <= 15) { fj = F0(bl, cl, dl); kj = _mm256_setzero_si256(); kjp = _mm256_set1_epi32(0x50a28be6u); fjp = F4(br, cr, dr); }
+            else if (j <= 31) { fj = F1(bl, cl, dl); kj = _mm256_set1_epi32(0x5a827999u); kjp = _mm256_set1_epi32(0x5c4dd124u); fjp = F3(br, cr, dr); }
+            else if (j <= 47) { fj = F2(bl, cl, dl); kj = _mm256_set1_epi32(0x6ed9eba1u); kjp = _mm256_set1_epi32(0x6d703ef3u); fjp = F2(br, cr, dr); }
+            else if (j <= 63) { fj = F3(bl, cl, dl); kj = _mm256_set1_epi32(0x8f1bbcdcu); kjp = _mm256_set1_epi32(0x7a6d76e9u); fjp = F1(br, cr, dr); }
+            else { fj = F4(bl, cl, dl); kj = _mm256_set1_epi32(0xa953fd4eu); kjp = _mm256_setzero_si256(); fjp = F0(br, cr, dr); }
+
+            __m256i xj = _mm256_load_si256((__m256i*)X[r[j]]);
+            __m256i xjp = _mm256_load_si256((__m256i*)X[rp[j]]);
+
+            __m256i tl = ADD(al, ADD(fj, ADD(xj, kj)));
+            tl = ADD(ROTL_VAR(tl, s[j]), el);
+            al = el; el = dl; dl = ROTL10(cl); cl = bl; bl = tl;
+
+            __m256i tr = ADD(ar, ADD(fjp, ADD(xjp, kjp)));
+            tr = ADD(ROTL_VAR(tr, sp[j]), er);
+            ar = er; er = dr; dr = ROTL10(cr); cr = br; br = tr;
+        }
+
+        __m256i t = ADD(h1, ADD(cl, dr));
+        h1 = ADD(h2, ADD(dl, er));
+        h2 = ADD(h3, ADD(el, ar));
+        h3 = ADD(h4, ADD(al, br));
+        h4 = ADD(h0, ADD(bl, cr));
+        h0 = t;
+
+        std::uint32_t a0[8], a1[8], a2[8], a3[8], a4[8];
+        _mm256_storeu_si256((__m256i*)a0, h0);
+        _mm256_storeu_si256((__m256i*)a1, h1);
+        _mm256_storeu_si256((__m256i*)a2, h2);
+        _mm256_storeu_si256((__m256i*)a3, h3);
+        _mm256_storeu_si256((__m256i*)a4, h4);
+
+        for (int lane = 0; lane < 8; ++lane) {
+            std::uint32_t* o = (std::uint32_t*)out[lane];
+            o[0] = a0[lane];
+            o[1] = a1[lane];
+            o[2] = a2[lane];
+            o[3] = a3[lane];
+            o[4] = a4[lane];
+        }
+        return;
+    }
+#endif
+    // Fallback
+    for(int i = 0; i < 8; ++i) {
+        if (data[i] && out[i]) {
+            auto h = ripemd160(data[i], length);
+            std::memcpy(out[i], h.data(), 20);
+        }
+    }
 }
 
 }  // namespace bchaves::core

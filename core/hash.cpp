@@ -213,9 +213,102 @@ void Sha256::transform_portable() {
 __attribute__((target("avx2")))
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
-    // Implementação Batch 8 via AVX2
-    // Processa 8 blocos de uma vez. Para máxima performance, a lógica SHA256
-    // deve ser vetorizada em registros YMM.
+#if defined(__x86_64__) || defined(__i386__)
+    if (length == 33) {
+        // --- AVX2 SIMD SHA-256 for 8 independent 33-byte buffers ---
+        const __m256i bswap_mask = _mm256_set_epi8(
+            12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
+            12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
+        );
+
+        __m256i W[64];
+
+        #define LOAD_W(i) _mm256_set_epi32( \
+            *(const std::uint32_t*)(data[7] + i*4), *(const std::uint32_t*)(data[6] + i*4), \
+            *(const std::uint32_t*)(data[5] + i*4), *(const std::uint32_t*)(data[4] + i*4), \
+            *(const std::uint32_t*)(data[3] + i*4), *(const std::uint32_t*)(data[2] + i*4), \
+            *(const std::uint32_t*)(data[1] + i*4), *(const std::uint32_t*)(data[0] + i*4))
+
+        for (int i = 0; i < 8; ++i) {
+            W[i] = _mm256_shuffle_epi8(LOAD_W(i), bswap_mask);
+        }
+
+        // W[8]: 33rd byte (index 32) + 0x80 padding
+        W[8] = _mm256_set_epi32(
+            ((std::uint32_t)data[7][32] << 24) | 0x00800000u, ((std::uint32_t)data[6][32] << 24) | 0x00800000u,
+            ((std::uint32_t)data[5][32] << 24) | 0x00800000u, ((std::uint32_t)data[4][32] << 24) | 0x00800000u,
+            ((std::uint32_t)data[3][32] << 24) | 0x00800000u, ((std::uint32_t)data[2][32] << 24) | 0x00800000u,
+            ((std::uint32_t)data[1][32] << 24) | 0x00800000u, ((std::uint32_t)data[0][32] << 24) | 0x00800000u
+        );
+
+        __m256i zero = _mm256_setzero_si256();
+        for (int i = 9; i < 15; ++i) W[i] = zero;
+        W[15] = _mm256_set1_epi32(264); // 33 bytes * 8 bits
+
+        #define SHR(x, n) _mm256_srli_epi32(x, n)
+        #define ROTR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - n))
+        #define XOR(a, b) _mm256_xor_si256(a, b)
+        #define AND(a, b) _mm256_and_si256(a, b)
+        #define ANDNOT(a, b) _mm256_andnot_si256(a, b)
+        #define OR(a, b) _mm256_or_si256(a, b)
+        #define ADD(a, b) _mm256_add_epi32(a, b)
+        #define SIG0(x) XOR(ROTR(x, 7), XOR(ROTR(x, 18), SHR(x, 3)))
+        #define SIG1(x) XOR(ROTR(x, 17), XOR(ROTR(x, 19), SHR(x, 10)))
+        #define EP0(x) XOR(ROTR(x, 2), XOR(ROTR(x, 13), ROTR(x, 22)))
+        #define EP1(x) XOR(ROTR(x, 6), XOR(ROTR(x, 11), ROTR(x, 25)))
+        #define CH(e, f, g) XOR(AND(e, f), ANDNOT(e, g))
+        #define MAJ(a, b, c) OR(AND(a, b), OR(AND(a, c), AND(b, c)))
+
+        for (int i = 16; i < 64; ++i) {
+            W[i] = ADD(ADD(SIG1(W[i - 2]), W[i - 7]), ADD(SIG0(W[i - 15]), W[i - 16]));
+        }
+
+        __m256i A = _mm256_set1_epi32(0x6a09e667u);
+        __m256i B = _mm256_set1_epi32(0xbb67ae85u);
+        __m256i C = _mm256_set1_epi32(0x3c6ef372u);
+        __m256i D = _mm256_set1_epi32(0xa54ff53au);
+        __m256i E = _mm256_set1_epi32(0x510e527fu);
+        __m256i F = _mm256_set1_epi32(0x9b05688cu);
+        __m256i G = _mm256_set1_epi32(0x1f83d9abu);
+        __m256i H = _mm256_set1_epi32(0x5be0cd19u);
+
+        for (int i = 0; i < 64; ++i) {
+            __m256i T1 = ADD(ADD(ADD(H, EP1(E)), CH(E, F, G)), ADD(_mm256_set1_epi32(kTable_[i]), W[i]));
+            __m256i T2 = ADD(EP0(A), MAJ(A, B, C));
+            H = G; G = F; F = E; E = ADD(D, T1);
+            D = C; C = B; B = A; A = ADD(T1, T2);
+        }
+
+        A = ADD(A, _mm256_set1_epi32(0x6a09e667u));
+        B = ADD(B, _mm256_set1_epi32(0xbb67ae85u));
+        C = ADD(C, _mm256_set1_epi32(0x3c6ef372u));
+        D = ADD(D, _mm256_set1_epi32(0xa54ff53au));
+        E = ADD(E, _mm256_set1_epi32(0x510e527fu));
+        F = ADD(F, _mm256_set1_epi32(0x9b05688cu));
+        G = ADD(G, _mm256_set1_epi32(0x1f83d9abu));
+        H = ADD(H, _mm256_set1_epi32(0x5be0cd19u));
+
+        #define STORE_H(i, reg) do { \
+            __m256i swapped = _mm256_shuffle_epi8(reg, bswap_mask); \
+            std::uint32_t arr[8]; \
+            _mm256_storeu_si256((__m256i*)arr, swapped); \
+            ((std::uint32_t*)out[0])[i] = arr[0]; \
+            ((std::uint32_t*)out[1])[i] = arr[1]; \
+            ((std::uint32_t*)out[2])[i] = arr[2]; \
+            ((std::uint32_t*)out[3])[i] = arr[3]; \
+            ((std::uint32_t*)out[4])[i] = arr[4]; \
+            ((std::uint32_t*)out[5])[i] = arr[5]; \
+            ((std::uint32_t*)out[6])[i] = arr[6]; \
+            ((std::uint32_t*)out[7])[i] = arr[7]; \
+        } while(0)
+
+        STORE_H(0, A); STORE_H(1, B); STORE_H(2, C); STORE_H(3, D);
+        STORE_H(4, E); STORE_H(5, F); STORE_H(6, G); STORE_H(7, H);
+        
+        return;
+    }
+#endif
+    // Fallback genérico para tamanhos != 33 bytes ou quando não há AVX2
     for(int i = 0; i < 8; ++i) {
         if (data[i] && out[i]) {
             auto h = sha256(data[i], length);

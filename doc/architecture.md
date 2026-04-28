@@ -7,12 +7,12 @@ O **Bchaves** utiliza uma arquitetura em camadas projetada para performance e mo
 ### 1. `core/` (Fundamentos Zero-Allocation)
 Esta é a base do sistema, projetada para ter **zero alocações de heap** no loop crítico.
 - **`secp256k1.cpp/hpp`**: Operações em curvas elípticas Jacobianas com otimização **GLV**. Funções de serialização redesenhadas para usar buffers locais.
-- **`address.cpp/hpp`**: Lógica para derivação de endereços Bitcoin, agora suportando **SegWit (Bech32)** e **P2SH**.
-- **`cuckoo.hpp`**: Filtro probabilístico de alta densidade.
+- **`hash.cpp/hpp`**: Engine de Hashing **Vetorizada (AVX2)**. Processa 8 blocos SHA-256 e RIPEMD-160 em paralelo, utilizando pipelines de registrador YMM.
+- **`cuckoo.hpp`**: Filtro probabilístico de alta densidade para verificação de alvos em O(1).
 
 ### 2. `engine/` (Motores de Busca)
 Contém a lógica pesada de "como encontrar a chave". É aqui que os algoritmos de busca são implementados.
-- **`address.cpp`**: Motor de busca de endereços unificado. Implementa o modo **Linear** (Standard) e o modo **Hybrid** (LCG Partitioned).
+- **`address.cpp`**: Motor de busca de endereços unificado. Implementa o modo **Linear** (Standard) e o modo **Hybrid** (LCG Partitioned), agora integrado com o **Pipeline Vetorial de Alta Pressão**.
 - **`bsgs.cpp`**: Algoritmo Baby-Step Giant-Step com gerenciamento de shards e Cuckoo Filter.
 - **`kangaroo.cpp`**: Pollard's Kangaroo com modelo de frota distribuída.
 - **`app.hpp`**: Cabeçalho comum para estados globais do motor.
