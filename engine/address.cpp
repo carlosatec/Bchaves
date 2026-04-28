@@ -307,7 +307,9 @@ int run_address(const bchaves::system::AddressOptions& options) {
         g_hybrid_chunk_size = static_cast<uint64_t>(kBatch) * options.chunk_k;
         if (g_hybrid_chunk_size < 1048576ULL) g_hybrid_chunk_size = 1048576ULL;
 
-        const bchaves::core::BigInt diff = end - start;
+        bchaves::core::BigInt diff = end - start;
+        bchaves::core::BigInt remainder_adj(g_hybrid_chunk_size - 1);
+        diff = diff + remainder_adj;
         g_hybrid_total_chunks = bigint_div_u64(diff, g_hybrid_chunk_size);
         if (g_hybrid_total_chunks == 0) g_hybrid_total_chunks = 1;
 
@@ -316,17 +318,31 @@ int run_address(const bchaves::system::AddressOptions& options) {
             const auto ckp_path = bchaves::system::default_checkpoint_path("address-hybrid", options.bits);
             if (std::filesystem::exists(ckp_path)) {
                 std::string err;
-                if (bchaves::system::load_checkpoint(ckp_path, checkpoint, err)
-                    && checkpoint.algorithm == "address-hybrid"
-                    && checkpoint.hybrid_chunk_size   == g_hybrid_chunk_size
-                    && checkpoint.hybrid_total_chunks == g_hybrid_total_chunks) {
-                    g_chunk_step = checkpoint.hybrid_chunk_step;
-                    if (g_chunk_step == 0 || gcd64(g_chunk_step, g_hybrid_total_chunks) != 1)
-                        g_chunk_step = find_coprime_step(g_hybrid_total_chunks);
-                    g_chunk_counter.store(checkpoint.hybrid_chunk_counter);
-                    resuming = true;
-                    std::cout << "[+] Retomando: " << checkpoint.hybrid_chunk_counter
-                              << "/" << g_hybrid_total_chunks << " chunks\n";
+                if (bchaves::system::load_checkpoint(ckp_path, checkpoint, err)) {
+                    if (checkpoint.algorithm == "address-hybrid"
+                        && checkpoint.hybrid_chunk_size   == g_hybrid_chunk_size
+                        && checkpoint.hybrid_total_chunks == g_hybrid_total_chunks) {
+                        
+                        g_chunk_step = checkpoint.hybrid_chunk_step;
+                        if (g_chunk_step == 0 || gcd64(g_chunk_step, g_hybrid_total_chunks) != 1)
+                            g_chunk_step = find_coprime_step(g_hybrid_total_chunks);
+                        g_chunk_counter.store(checkpoint.hybrid_chunk_counter);
+                        resuming = true;
+                        std::cout << "[+] Checkpoint detectado. Retomando progresso...\n";
+                        std::cout << "    Progresso: " << checkpoint.hybrid_chunk_counter
+                                  << " / " << g_hybrid_total_chunks << " chunks\n";
+                    } else {
+                        std::cerr << "\n[!] ERRO CRÍTICO DE CHECKPOINT [!]\n";
+                        std::cerr << "O arquivo de checkpoint existente foi criado com parâmetros incompatíveis.\n";
+                        std::cerr << "Você provavelmente alterou o valor de '-k' ou o Modo de Busca (-R).\n";
+                        std::cerr << "No modo Híbrido, o mapa de progresso não pode ser traduzido.\n";
+                        std::cerr << "Para proteger seu progresso anterior, a execução foi ABORTADA.\n";
+                        std::cerr << "-> Use os mesmos parâmetros originais para continuar,\n";
+                        std::cerr << "-> OU apague o arquivo '" << ckp_path << "' para recomeçar do zero.\n\n";
+                        exit(1);
+                    }
+                } else {
+                    std::cerr << "[!] Falha ao ler checkpoint: " << err << "\n";
                 }
             }
         }
