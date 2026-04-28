@@ -2,6 +2,8 @@
  * Bchaves: Bitcoin Performance Engine
  * 
  * Descrição: Algoritmo Pollard's Kangaroo (Architectural Fleet Model).
+ *            Ultra-RAM Edition: Persistência de armadilhas, Cuckoo Filter,
+ *            e escrita bufferizada para disco lento.
  * 
  * Repository: https://github.com/carlosatec/Bchaves
  * Author:     Carlos
@@ -10,6 +12,7 @@
 #include "engine/app.hpp"
 #include "core/secp256k1.hpp"
 #include "core/hash.hpp"
+#include "core/cuckoo.hpp"
 #include <iostream>
 #include <vector>
 #include <array>
@@ -19,6 +22,8 @@
 #include <unordered_map>
 #include <csignal>
 #include <fstream>
+#include <cstring>
+#include <chrono>
 
 namespace bchaves::engine {
 namespace {
@@ -26,6 +31,12 @@ namespace {
 std::atomic<bool> g_stop_requested{false};
 void handle_sig(int) { g_stop_requested = true; }
 
+// ============================================================
+// Estruturas de Dados
+// ============================================================
+
+// Estrutura compacta de armadilha (41 bytes por entrada no disco)
+// Em RAM: 40 bytes via unordered_map overhead
 struct KangarooTrap {
     bchaves::core::BigInt distance;
     bool is_wild;
@@ -33,7 +44,7 @@ struct KangarooTrap {
 
 struct TrapShard {
     std::mutex mtx;
-    std::unordered_map<std::uint64_t, KangarooTrap> table; // HashX -> Trap
+    std::unordered_map<std::uint64_t, KangarooTrap> table;
 };
 
 struct Kangaroo {
@@ -47,8 +58,17 @@ struct Jump {
     bchaves::core::BigInt distance;
 };
 
-// Global Jump Table
-std::array<Jump, 64> g_jump_table;
+// ============================================================
+// Constantes do Formato de Arquivo de Armadilhas
+// ============================================================
+static constexpr uint32_t TRAP_MAGIC    = 0x42544B47; // "BTKG" (Bchaves Trap Kangaroo)
+static constexpr uint32_t TRAP_VERSION  = 2;
+static constexpr size_t   TRAP_HEADER_SIZE = 4 + 4 + 32 + 32; // magic + version + range_start + range_end
+
+// ============================================================
+// Jump Table Global - Alinhada em cache line (64 bytes)
+// ============================================================
+alignas(64) std::array<Jump, 64> g_jump_table;
 
 void init_jump_table() {
     bchaves::core::BigInt d(1);
@@ -59,14 +79,155 @@ void init_jump_table() {
     }
 }
 
-bool is_distinguished(const bchaves::core::BigInt& x, std::uint32_t bits) {
-    // Check if leading N bits are zero (high bits)
-    if (bits == 0) return true;
-    std::uint32_t limb_idx = (255 - bits) / 64;
-    std::uint32_t bit_offset = 63 - (255 - bits) % 64;
-    if (limb_idx >= 4) return x.is_zero();
-    std::uint64_t mask = (bit_offset == 63) ? ~0ULL : (((1ULL << (bit_offset + 1)) - 1ULL));
-    return (x.limbs[limb_idx] & mask) == 0;
+// Inline forçado para eliminar overhead de chamada no hot loop
+__attribute__((always_inline))
+inline bool is_distinguished(const bchaves::core::BigInt& x, std::uint32_t bits) {
+    if (__builtin_expect(bits == 0, 0)) return true;
+    if (__builtin_expect(bits >= 64, 0)) return x.limbs[0] == 0;
+    uint64_t mask = (1ULL << bits) - 1;
+    return __builtin_expect((x.limbs[0] & mask) == 0, 0);
+}
+
+// ============================================================
+// Fase 1: Persistência - Escrita com Header Validado
+// ============================================================
+
+bool write_trap_header(std::ofstream& out,
+                       const bchaves::core::BigInt& range_start,
+                       const bchaves::core::BigInt& range_end) {
+    out.write(reinterpret_cast<const char*>(&TRAP_MAGIC), 4);
+    out.write(reinterpret_cast<const char*>(&TRAP_VERSION), 4);
+    out.write(reinterpret_cast<const char*>(range_start.limbs.data()), 32);
+    out.write(reinterpret_cast<const char*>(range_end.limbs.data()), 32);
+    return out.good();
+}
+
+bool validate_trap_header(std::ifstream& in,
+                          const bchaves::core::BigInt& range_start,
+                          const bchaves::core::BigInt& range_end) {
+    uint32_t magic = 0, version = 0;
+    bchaves::core::BigInt file_start, file_end;
+
+    in.read(reinterpret_cast<char*>(&magic), 4);
+    in.read(reinterpret_cast<char*>(&version), 4);
+    in.read(reinterpret_cast<char*>(file_start.limbs.data()), 32);
+    in.read(reinterpret_cast<char*>(file_end.limbs.data()), 32);
+
+    if (!in.good()) return false;
+    if (magic != TRAP_MAGIC) return false;
+    if (version != TRAP_VERSION) return false;
+
+    // Verificar se o range é o mesmo
+    for (int i = 0; i < 4; ++i) {
+        if (file_start.limbs[i] != range_start.limbs[i]) return false;
+        if (file_end.limbs[i] != range_end.limbs[i]) return false;
+    }
+    return true;
+}
+
+// ============================================================
+// Fase 1: Cold Boot - Carregar armadilhas do disco para RAM
+// ============================================================
+
+uint64_t load_traps_from_disk(std::vector<TrapShard>& shards,
+                              bchaves::core::CuckooFilter& filter,
+                              const bchaves::core::BigInt& range_start,
+                              const bchaves::core::BigInt& range_end) {
+    uint64_t loaded = 0;
+    std::error_code ec;
+
+    if (!std::filesystem::exists("traps", ec)) return 0;
+
+    auto start_time = std::chrono::steady_clock::now();
+    std::cout << "[+] Cold Boot: Carregando armadilhas do disco...\n";
+
+    for (int i = 0; i < 16; ++i) {
+        std::string filename = "traps/shard_" + std::to_string(i) + ".bin";
+        std::ifstream in(filename, std::ios::binary);
+        if (!in.is_open()) continue;
+
+        // Validar header
+        if (!validate_trap_header(in, range_start, range_end)) {
+            std::cerr << "[!] Arquivo " << filename
+                      << " tem range incompatível. Ignorando.\n";
+            continue;
+        }
+
+        // Ler armadilhas
+        while (in.good() && !in.eof()) {
+            uint64_t hash = 0;
+            bchaves::core::BigInt distance;
+            uint8_t wild = 0;
+
+            in.read(reinterpret_cast<char*>(&hash), sizeof(hash));
+            in.read(reinterpret_cast<char*>(distance.limbs.data()), 32);
+            in.read(reinterpret_cast<char*>(&wild), 1);
+
+            if (!in.good()) break;
+
+            int shard_idx = hash % 16;
+            auto& shard = shards[shard_idx];
+            std::lock_guard<std::mutex> lock(shard.mtx);
+            shard.table[hash] = {distance, wild != 0};
+            filter.insert(hash);
+            ++loaded;
+        }
+    }
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start_time).count();
+    std::cout << "[+] Cold Boot concluído: " << loaded
+              << " armadilhas carregadas em " << elapsed << "ms\n";
+    return loaded;
+}
+
+// ============================================================
+// Fase 1: Dump Bufferizado - Escrita assíncrona para disco
+// ============================================================
+
+void dump_shards_to_disk(std::vector<TrapShard>& shards,
+                         const bchaves::core::BigInt& range_start,
+                         const bchaves::core::BigInt& range_end) {
+    std::error_code ec;
+    std::filesystem::create_directories("traps", ec);
+
+    uint64_t total_dumped = 0;
+
+    for (int i = 0; i < 16; ++i) {
+        auto& shard = shards[i];
+        std::lock_guard<std::mutex> lock(shard.mtx);
+        if (shard.table.empty()) continue;
+
+        std::string filename = "traps/shard_" + std::to_string(i) + ".bin";
+
+        // Sempre reescrever o arquivo completo (com header)
+        std::ofstream out(filename, std::ios::binary | std::ios::trunc);
+        if (!out) continue;
+
+        write_trap_header(out, range_start, range_end);
+
+        // Buffer de escrita: acumular em memória antes de flush
+        constexpr size_t ENTRY_SIZE = 8 + 32 + 1; // hash + distance + wild
+        std::vector<char> write_buf;
+        write_buf.reserve(shard.table.size() * ENTRY_SIZE);
+
+        for (const auto& [hash, trap] : shard.table) {
+            const char* hp = reinterpret_cast<const char*>(&hash);
+            write_buf.insert(write_buf.end(), hp, hp + sizeof(hash));
+
+            const char* dp = reinterpret_cast<const char*>(trap.distance.limbs.data());
+            write_buf.insert(write_buf.end(), dp, dp + 32);
+
+            uint8_t wild = trap.is_wild ? 1 : 0;
+            write_buf.push_back(static_cast<char>(wild));
+        }
+
+        out.write(write_buf.data(), static_cast<std::streamsize>(write_buf.size()));
+        total_dumped += shard.table.size();
+    }
+
+    std::cout << "\n[+] Dump bufferizado: " << total_dumped
+              << " armadilhas salvas no disco.\n";
 }
 
 } // namespace
@@ -74,8 +235,6 @@ bool is_distinguished(const bchaves::core::BigInt& x, std::uint32_t bits) {
 int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     auto hardware = bchaves::system::detect_hardware();
     if (options.help) {
-        // Se foi --list-hardware via CommonOptions (flag modificada no cli.cpp)
-        // No CLI atual, setamos help=true para forçar a parada.
         std::cout << "[*] Hardware Detectado:\n"
                   << "    Cores: " << hardware.num_cores << " (Fisicos: " << hardware.num_physical_cores << ")\n"
                   << "    RAM: " << (hardware.ram_total / (1024*1024*1024)) << " GB (Livre: " << (hardware.ram_available / (1024*1024*1024)) << " GB)\n"
@@ -87,13 +246,12 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     }
 
     std::signal(SIGINT, handle_sig);
-    std::cout << "[+] Iniciando Kangaroo (Architectural Fleet Model)\n";
+    std::cout << "[+] Iniciando Kangaroo (Ultra-RAM Fleet Model)\n";
     
     bchaves::core::BigInt range_start, range_end;
     if (options.range.find("bits:") == 0) {
         uint32_t bits = std::stoul(options.range.substr(5));
         std::cout << "[*] Modo Bits Detectado: " << bits << "\n";
-        // range_start = 2^(bits-1), range_end = 2^bits - 1
         range_start = bchaves::core::BigInt(1) << (bits - 1);
         range_end = (bchaves::core::BigInt(1) << bits) - bchaves::core::BigInt(1);
     } else {
@@ -110,7 +268,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     
     // Alvo Y (Ponto Secp256k1)
     AddressMatcher matcher_placeholder;
-    auto target_load = bchaves::system::load_targets(options.target_path, true); // True exige pubkeys
+    auto target_load = bchaves::system::load_targets(options.target_path, true);
     if (target_load.entries.empty()) {
         std::cerr << "[E] Nenhuma Public Key encontrada no arquivo de alvos.\n";
         return 1;
@@ -122,16 +280,40 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     }
     std::cout << "[+] Alvo Y carregado com sucesso.\n";
 
+    // ============================================================
+    // Configuração de Memória e Filtro
+    // ============================================================
+    auto hw = bchaves::system::detect_hardware();
+    uint64_t max_traps = (hw.ram_available * 8) / 10 / 48; // 80% da RAM, ~48 bytes por trap
+    if (max_traps < 100000) max_traps = 100000;
+
+    // Cuckoo Filter dimensionado para o limite de armadilhas
+    auto trap_filter = std::make_unique<bchaves::core::CuckooFilter>(
+        std::min(max_traps, (uint64_t)50000000)); // Cap em 50M para filtro inicial
+
+    std::cout << "[+] Limite de RAM: " << (hw.ram_available / 1024 / 1024) << " MB\n";
+    std::cout << "[+] Limite de Armadilhas em RAM: " << max_traps << "\n";
+
     std::vector<TrapShard> shards(16);
     std::atomic<uint64_t> total_hops{0};
+    std::atomic<uint64_t> total_traps_in_ram{0};
     std::atomic<bool> found{false};
     bchaves::core::BigInt solution;
     std::mutex sol_mtx;
 
+    // ============================================================
+    // Fase 1: Cold Boot - Carregar armadilhas salvas anteriormente
+    // ============================================================
+    uint64_t preloaded = load_traps_from_disk(shards, *trap_filter, range_start, range_end);
+    total_traps_in_ram.store(preloaded);
+
+    // ============================================================
+    // Worker: Fleet de 64 Kangaroos por Thread
+    // ============================================================
     auto worker = [&](int thread_id) {
         (void)thread_id;
-        // Fleet de 64 Kangaroos por Core (Etapa 2 da Arquitetura)
-        struct KangarooMod {
+        // Fase 4: Estruturas alinhadas em cache line para SSE
+        struct alignas(64) KangarooMod {
             bchaves::core::PointJacobian p_jac;
             bchaves::core::Secp256k1Point p_aff;
             bchaves::core::BigInt distance;
@@ -142,9 +324,10 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         for(int i=0; i<64; ++i) {
             fleet[i].is_wild = (i % 2 == 0);
             bchaves::core::Secp256k1Point start_p = fleet[i].is_wild ? target_y : bchaves::core::secp256k1_multiply(range_end);
-            fleet[i].distance = fleet[i].is_wild ? 0 : range_end;
+            fleet[i].distance = fleet[i].is_wild ? bchaves::core::BigInt(0) : range_end;
             
-            bchaves::core::BigInt offset(i * 1000);
+            // Offset único por thread+kangaroo para evitar sobreposição
+            bchaves::core::BigInt offset((uint64_t)(thread_id * 64 + i) * 1000ULL);
             start_p = bchaves::core::secp256k1_add(start_p, bchaves::core::secp256k1_multiply(offset));
             fleet[i].distance = fleet[i].distance + offset; 
             
@@ -152,33 +335,46 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             fleet[i].p_aff = start_p;
         }
 
-        bchaves::core::PointJacobian batch_j[64];
-        bchaves::core::Secp256k1Point batch_a[64];
+        alignas(64) bchaves::core::PointJacobian batch_j[64];
+        alignas(64) bchaves::core::Secp256k1Point batch_a[64];
 
-        while(!g_stop_requested && !found.load()) {
+        while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
             // Rodada de saltos para toda a frota
+            // Fase 4: Prefetch da próxima entrada da Jump Table
             for(int i=0; i<64; ++i) {
                 uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
+                
+                // Prefetch: antecipar a próxima entrada da jump table
+                if (i + 1 < 64) {
+                    uint32_t next_idx = fleet[i+1].p_aff.x.limbs[0] % 64;
+                    __builtin_prefetch(&g_jump_table[next_idx], 0, 3);
+                }
+                
                 fleet[i].p_jac = bchaves::core::add_points_mixed(fleet[i].p_jac, g_jump_table[jump_idx].point);
-                fleet[i].distance = fleet[i].distance + g_jump_table[jump_idx].distance;
+                fleet[i].distance += g_jump_table[jump_idx].distance;
                 batch_j[i] = fleet[i].p_jac;
             }
 
             // Normalização em massa da frota (1 mod_inv total)
             bchaves::core::batch_normalize(batch_j, batch_a, 64);
-            total_hops += 64;
+            total_hops.fetch_add(64, std::memory_order_relaxed);
 
             for(int i=0; i<64; ++i) {
                 fleet[i].p_aff = batch_a[i];
                 auto& k = fleet[i];
 
+                // Distinguished Point: trailing 16 zero bits
                 if (is_distinguished(k.p_aff.x, 16)) {
                     uint64_t h = k.p_aff.x.limbs[0];
                     int shard_idx = h % 16;
+
+                    // Fase 3: Cuckoo pre-check (sem lock!)
+                    bool maybe_exists = trap_filter->lookup(h);
+
                     auto& shard = shards[shard_idx];
-                    
                     std::lock_guard<std::mutex> lock(shard.mtx);
-                    if (shard.table.count(h)) {
+
+                    if (maybe_exists && shard.table.count(h)) {
                         auto& other = shard.table[h];
                         if (other.is_wild != k.is_wild) {
                             std::lock_guard<std::mutex> slock(sol_mtx);
@@ -192,8 +388,11 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
                             }
                             return;
                         }
+                        // Colisão same-type: ignorar (não é útil)
                     } else {
                         shard.table[h] = {k.distance, k.is_wild};
+                        trap_filter->insert(h);
+                        total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
@@ -207,49 +406,17 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     std::vector<std::thread> threads;
     for(std::uint32_t i=0; i<num_threads; ++i) threads.emplace_back(worker, i);
 
-    auto hw = bchaves::system::detect_hardware();
-    uint64_t max_traps = (hw.ram_available * 8) / 10 / 80; // 80% da RAM, ~80 bytes por trap
-    if (max_traps < 100000) max_traps = 100000; // Mínimo de segurança
-    
-    std::cout << "[+] Limite de RAM: " << (hw.ram_available / 1024 / 1024) << " MB\n";
-    std::cout << "[+] Limite de Armadilhas em RAM: " << max_traps << "\n";
-
-    auto dump_shards = [&]() {
-        std::cout << "\n[!] RAM em " << (hw.ram_available / 1024 / 1024) << " MB. Iniciando Dump de Armadilhas para disco...\n";
-        std::error_code ec;
-        std::filesystem::create_directories("traps", ec);
-        
-        for (int i = 0; i < 16; ++i) {
-            auto& shard = shards[i];
-            std::lock_guard<std::mutex> lock(shard.mtx);
-            if (shard.table.empty()) continue;
-            
-            std::string filename = "traps/shard_" + std::to_string(i) + ".bin";
-            std::ofstream out(filename, std::ios::binary | std::ios::app);
-            if (out) {
-                for (const auto& [hash, trap] : shard.table) {
-                    out.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
-                    out.write(reinterpret_cast<const char*>(trap.distance.limbs.data()), 32);
-                    uint8_t wild = trap.is_wild ? 1 : 0;
-                    out.write(reinterpret_cast<const char*>(&wild), 1);
-                }
-                shard.table.clear();
-            }
-        }
-        std::cout << "[+] Dump concluído. Memória liberada.\n";
-    };
-
+    // ============================================================
+    // Loop Principal: Monitoramento + Dump Periódico
+    // ============================================================
     auto start_time = std::chrono::steady_clock::now();
     auto last_dump = start_time;
+    constexpr auto DUMP_INTERVAL = std::chrono::minutes(5); // Dump a cada 5 minutos
 
     while(!found.load() && !g_stop_requested) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         
-        uint64_t current_traps = 0;
-        for(int i=0; i<16; ++i) {
-            std::lock_guard<std::mutex> lock(shards[i].mtx);
-            current_traps += shards[i].table.size();
-        }
+        uint64_t current_traps = total_traps_in_ram.load();
 
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
@@ -257,17 +424,39 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         
         std::cout << "\r[*] Total Hops: " << total_hops.load() 
                   << " | Speed: " << bchaves::system::format_rate(rate) 
-                  << " | Traps in RAM: " << current_traps << " / " << max_traps << "        " << std::flush;
+                  << " | Traps: " << current_traps << " / " << max_traps << "        " << std::flush;
 
-        // Dump se atingir o limite de RAM
+        // Dump periódico bufferizado (a cada 5 minutos)
+        if (now - last_dump >= DUMP_INTERVAL) {
+            dump_shards_to_disk(shards, range_start, range_end);
+            last_dump = now;
+        }
+
+        // Dump de emergência se RAM atingir o limite
         if (current_traps >= max_traps) {
-            dump_shards();
+            std::cout << "\n[!] Limite de RAM atingido. Salvando armadilhas...\n";
+            dump_shards_to_disk(shards, range_start, range_end);
+            // Limpar a RAM para continuar (as traps ficam seguras no disco)
+            for (int i = 0; i < 16; ++i) {
+                std::lock_guard<std::mutex> lock(shards[i].mtx);
+                shards[i].table.clear();
+            }
+            total_traps_in_ram.store(0);
             last_dump = now;
         }
     }
 
+    // ============================================================
+    // Shutdown: Salvar tudo antes de sair
+    // ============================================================
     for(auto& t : threads) if(t.joinable()) t.join();
     std::cout << "\n";
+
+    // Dump final de emergência (garantia de persistência)
+    if (!found.load() && total_traps_in_ram.load() > 0) {
+        std::cout << "[+] Salvando armadilhas antes de encerrar...\n";
+        dump_shards_to_disk(shards, range_start, range_end);
+    }
 
     if (found.load()) {
         bchaves::core::DerivedKeyInfo info;
