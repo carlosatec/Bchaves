@@ -36,7 +36,7 @@ O motor principal para exploração de puzzles por bits.
 #### Modos de Exploração (`-R`)
 | Modo | Descrição | Cenário Ideal |
 |------|-----------|---------------|
-| `hybrid` | **(Recomendado)** Explorador pseudoaleatório particionado. | Puzzle 30-160 |
+| `hybrid` | **(Recomendado)** Explorador pseudoaleatório particionado.
 | `sequential` | Busca linear incremental (`start` → `end`). | Ranges pequenos (< 30 bits) |
 | `backward` | Busca linear decrescente (`end` → `start`). | Ranges pequenos |
 | `both` | Busca bidirecional simultânea. | Verificação de extremidades |
