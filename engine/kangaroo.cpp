@@ -13,6 +13,7 @@
 #include "core/secp256k1.hpp"
 #include "core/hash.hpp"
 #include "core/cuckoo.hpp"
+#include "system/checkpoint.hpp"
 #include <iostream>
 #include <vector>
 #include <array>
@@ -24,6 +25,9 @@
 #include <fstream>
 #include <cstring>
 #include <chrono>
+#include <ctime>
+#include <filesystem>
+#include <memory>
 
 namespace bchaves::engine {
 
@@ -71,6 +75,15 @@ struct TrapShard {
     std::unordered_map<TrapKey, KangarooTrap, TrapKeyHasher> table;
 };
 
+static constexpr std::size_t kFleetSize = 64;
+static constexpr std::size_t kCheckpointWordsPerKangaroo = 3;
+
+struct KangarooWorkerState {
+    std::mutex mutex;
+    std::array<bchaves::core::Secp256k1Point, kFleetSize> points{};
+    std::array<bchaves::core::BigInt, kFleetSize> distances{};
+};
+
 struct Kangaroo {
     bchaves::core::Secp256k1Point point;
     bchaves::core::BigInt distance;
@@ -93,6 +106,53 @@ static constexpr size_t   TRAP_HEADER_SIZE = 4 + 4 + 32 + 32; // magic + version
 // Jump Table Global - Alinhada em cache line (64 bytes)
 // ============================================================
 alignas(64) std::array<Jump, 64> g_jump_table;
+
+static bchaves::core::BigInt bytes32_to_bigint(const std::array<std::uint8_t, 32>& bytes) {
+    bchaves::core::BigInt out;
+    for (int i = 0; i < 4; ++i) {
+        std::uint64_t limb = 0;
+        for (int j = 0; j < 8; ++j) {
+            limb |= static_cast<std::uint64_t>(bytes[31 - (i * 8 + j)]) << (j * 8);
+        }
+        out.limbs[i] = limb;
+    }
+    return out;
+}
+
+static std::vector<std::array<std::uint8_t, 32>> snapshot_worker_states(
+    const std::vector<std::unique_ptr<KangarooWorkerState>>& workers) {
+    std::vector<std::array<std::uint8_t, 32>> snapshot;
+    snapshot.reserve(workers.size() * kFleetSize * kCheckpointWordsPerKangaroo);
+    for (const auto& worker : workers) {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        for (std::size_t i = 0; i < kFleetSize; ++i) {
+            snapshot.push_back(bchaves::core::to_bytes32(worker->points[i].x));
+            snapshot.push_back(bchaves::core::to_bytes32(worker->points[i].y));
+            snapshot.push_back(bchaves::core::to_bytes32(worker->distances[i]));
+        }
+    }
+    return snapshot;
+}
+
+static bool restore_worker_states(const bchaves::system::CheckpointState& checkpoint,
+                                  std::vector<std::unique_ptr<KangarooWorkerState>>& workers) {
+    const std::size_t expected_words = workers.size() * kFleetSize * kCheckpointWordsPerKangaroo;
+    if (checkpoint.worker_currents.size() != expected_words) {
+        return false;
+    }
+
+    std::size_t offset = 0;
+    for (auto& worker : workers) {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        for (std::size_t i = 0; i < kFleetSize; ++i) {
+            worker->points[i].x = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
+            worker->points[i].y = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
+            worker->points[i].infinity = false;
+            worker->distances[i] = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
+        }
+    }
+    return true;
+}
 
 void init_jump_table() {
     bchaves::core::BigInt d(1);
@@ -374,8 +434,9 @@ void dump_shards_to_disk(const std::string& trap_dir,
 
 
 int run_kangaroo(const bchaves::system::KangarooOptions& options) {
+    g_stop_requested.store(false, std::memory_order_relaxed);
     auto hardware = bchaves::system::detect_hardware();
-    const std::string trap_dir = options.checkpoint_path.value_or(std::filesystem::path("traps")).string();
+    const std::string trap_dir = options.trap_dir.value_or(std::filesystem::path("traps")).string();
     const bool persist_traps = !options.benchmark;
     const bool load_traps = persist_traps && !options.no_load;
     if (options.help) {
@@ -390,6 +451,11 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     }
 
     std::signal(SIGINT, handle_sig);
+    std::string backend_error;
+    if (!configure_secp256k1_backend(options.secp256k1_backend, backend_error)) {
+        std::cerr << "[E] Falha ao configurar secp256k1: " << backend_error << '\n';
+        return 1;
+    }
     std::cout << "[+] Iniciando Kangaroo (Ultra-RAM Fleet Model)\n";
     
     bchaves::core::BigInt range_start, range_end;
@@ -466,6 +532,66 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // ============================================================
     // Worker: Fleet de 64 Kangaroos por Thread
     // ============================================================
+    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
+    std::uint32_t num_threads = tune.threads;
+    const std::filesystem::path checkpoint_path = options.checkpoint_path.value_or(
+        bchaves::system::default_checkpoint_path("kangaroo"));
+    std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
+
+    std::vector<std::unique_ptr<KangarooWorkerState>> worker_states;
+    worker_states.reserve(num_threads);
+    for (std::uint32_t thread_id = 0; thread_id < num_threads; ++thread_id) {
+        auto state = std::make_unique<KangarooWorkerState>();
+        const uint32_t wild_count = static_cast<uint32_t>((kFleetSize * options.wild_ratio) / 100);
+        for (std::size_t i = 0; i < kFleetSize; ++i) {
+            const bool is_wild = static_cast<uint32_t>(i) < wild_count;
+            bchaves::core::Secp256k1Point start_p = is_wild ? target_y : bchaves::core::secp256k1_multiply(range_end);
+            bchaves::core::BigInt distance = is_wild ? bchaves::core::BigInt(0) : range_end;
+            bchaves::core::BigInt offset(
+                static_cast<std::uint64_t>(thread_id * kFleetSize + static_cast<std::uint32_t>(i)) * 1000ULL);
+            start_p = bchaves::core::secp256k1_add(start_p, bchaves::core::secp256k1_multiply(offset));
+            distance += offset;
+            state->points[i] = start_p;
+            state->points[i].infinity = false;
+            state->distances[i] = distance;
+        }
+        worker_states.push_back(std::move(state));
+    }
+
+    bchaves::system::CheckpointState checkpoint{};
+    checkpoint.algorithm = "kangaroo";
+    checkpoint.range_start = bchaves::core::to_bytes32(range_start);
+    checkpoint.range_end = bchaves::core::to_bytes32(range_end);
+    checkpoint.threads = num_threads;
+    checkpoint.batch_size = static_cast<std::uint32_t>(kFleetSize);
+    checkpoint.progress_secondary = options.wild_ratio;
+
+    if (options.checkpoint_enabled && std::filesystem::exists(checkpoint_path)) {
+        std::string err;
+        if (bchaves::system::load_checkpoint(checkpoint_path, checkpoint, err)) {
+            const bool compatible =
+                checkpoint.algorithm == "kangaroo" &&
+                checkpoint.threads == num_threads &&
+                checkpoint.batch_size == static_cast<std::uint32_t>(kFleetSize) &&
+                checkpoint.progress_secondary == options.wild_ratio &&
+                checkpoint.range_start == bchaves::core::to_bytes32(range_start) &&
+                checkpoint.range_end == bchaves::core::to_bytes32(range_end) &&
+                restore_worker_states(checkpoint, worker_states);
+            if (!compatible) {
+                std::cerr << "\n[!] ERRO CRITICO DE CHECKPOINT [!]\n";
+                std::cerr << "O checkpoint do kangaroo nao e compativel com os parametros atuais.\n";
+                std::cerr << "Verifique range, threads, --wild/--tame ou remova o arquivo '"
+                          << checkpoint_path.string() << "' para reiniciar.\n\n";
+                return 1;
+            }
+            total_hops.store(checkpoint.progress_primary, std::memory_order_relaxed);
+            std::cout << "[+] Checkpoint do kangaroo detectado. Retomando frota por thread.\n";
+            std::cout << "    Hops acumulados: " << total_hops.load() << "\n";
+        } else {
+            std::cerr << "[!] Falha ao ler checkpoint: " << err << "\n";
+        }
+    }
+
     auto worker = [&](int thread_id) {
         bchaves::system::pin_thread_to_core(static_cast<std::uint32_t>(thread_id));
         // Fase 4: Estruturas alinhadas em cache line para SSE
@@ -475,35 +601,32 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             bchaves::core::BigInt distance;
             bool is_wild;
         };
-        std::array<KangarooMod, 64> fleet;
+        std::array<KangarooMod, kFleetSize> fleet;
+        KangarooWorkerState& worker_state = *worker_states[thread_id];
         
         // Wild/Tame ratio configurável via --wild / --tame
-        const uint32_t wild_count = static_cast<uint32_t>((64 * options.wild_ratio) / 100);
-        for(int i=0; i<64; ++i) {
-            fleet[i].is_wild = (static_cast<uint32_t>(i) < wild_count);
-            bchaves::core::Secp256k1Point start_p = fleet[i].is_wild ? target_y : bchaves::core::secp256k1_multiply(range_end);
-            fleet[i].distance = fleet[i].is_wild ? bchaves::core::BigInt(0) : range_end;
-            
-            // Offset único por thread+kangaroo para evitar sobreposição
-            bchaves::core::BigInt offset((uint64_t)(thread_id * 64 + i) * 1000ULL);
-            start_p = bchaves::core::secp256k1_add(start_p, bchaves::core::secp256k1_multiply(offset));
-            fleet[i].distance = fleet[i].distance + offset; 
-            
-            fleet[i].p_jac = bchaves::core::to_jacobian(start_p.x, start_p.y);
-            fleet[i].p_aff = start_p;
+        const uint32_t wild_count = static_cast<uint32_t>((kFleetSize * options.wild_ratio) / 100);
+        {
+            std::lock_guard<std::mutex> state_lock(worker_state.mutex);
+            for (std::size_t i = 0; i < kFleetSize; ++i) {
+                fleet[i].is_wild = static_cast<uint32_t>(i) < wild_count;
+                fleet[i].distance = worker_state.distances[i];
+                fleet[i].p_aff = worker_state.points[i];
+                fleet[i].p_jac = bchaves::core::to_jacobian(fleet[i].p_aff.x, fleet[i].p_aff.y);
+            }
         }
 
-        alignas(64) bchaves::core::PointJacobian batch_j[64];
-        alignas(64) bchaves::core::Secp256k1Point batch_a[64];
+        alignas(64) bchaves::core::PointJacobian batch_j[kFleetSize];
+        alignas(64) bchaves::core::Secp256k1Point batch_a[kFleetSize];
 
         while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
             // Rodada de saltos para toda a frota
             // Fase 4: Prefetch da próxima entrada da Jump Table
-            for(int i=0; i<64; ++i) {
+            for(std::size_t i = 0; i < kFleetSize; ++i) {
                 uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
                 
                 // Prefetch: antecipar a próxima entrada da jump table
-                if (i + 1 < 64) {
+                if (i + 1 < kFleetSize) {
                     uint32_t next_idx = fleet[i+1].p_aff.x.limbs[0] % 64;
                     __builtin_prefetch(&g_jump_table[next_idx], 0, 3);
                 }
@@ -514,14 +637,22 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             }
 
             // Normalização em massa da frota (1 mod_inv total)
-            bchaves::core::batch_normalize(batch_j, batch_a, 64);
-            total_hops.fetch_add(64, std::memory_order_relaxed);
+            bchaves::core::batch_normalize(batch_j, batch_a, kFleetSize);
+            total_hops.fetch_add(kFleetSize, std::memory_order_relaxed);
 
-            for(int i=0; i<64; ++i) {
+            for(std::size_t i = 0; i < kFleetSize; ++i) {
                 fleet[i].p_aff = batch_a[i];
-                auto& k = fleet[i];
+            }
+            {
+                std::lock_guard<std::mutex> state_lock(worker_state.mutex);
+                for (std::size_t i = 0; i < kFleetSize; ++i) {
+                    worker_state.points[i] = fleet[i].p_aff;
+                    worker_state.distances[i] = fleet[i].distance;
+                }
+            }
 
-                // Distinguished Point: trailing 16 zero bits
+            for (std::size_t i = 0; i < kFleetSize; ++i) {
+                auto& k = fleet[i];
                 if (is_distinguished(k.p_aff.x, 16)) {
                     const TrapKey key = make_trap_key(k.p_aff);
                     uint64_t h = trap_filter_hash(key);
@@ -578,10 +709,6 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         }
     };
 
-    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
-    std::uint32_t num_threads = tune.threads;
-    std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
-
     std::vector<std::thread> threads;
     for(std::uint32_t i=0; i<num_threads; ++i) threads.emplace_back(worker, i);
 
@@ -590,6 +717,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // ============================================================
     auto start_time = std::chrono::steady_clock::now();
     auto last_dump = start_time;
+    auto last_checkpoint = start_time;
     constexpr auto DUMP_INTERVAL = std::chrono::minutes(5); // Dump a cada 5 minutos
 
     while(!found.load() && !g_stop_requested) {
@@ -608,6 +736,30 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         if (persist_traps && now - last_dump >= DUMP_INTERVAL) {
             dump_shards_to_disk(trap_dir, shards, range_start, range_end);
             last_dump = now;
+        }
+
+        if (options.checkpoint_enabled &&
+            !options.benchmark &&
+            now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
+            if (persist_traps && total_traps_in_ram.load(std::memory_order_relaxed) > 0) {
+                dump_shards_to_disk(trap_dir, shards, range_start, range_end);
+                last_dump = now;
+            }
+            bchaves::system::CheckpointState ckp{};
+            ckp.algorithm = "kangaroo";
+            ckp.range_start = bchaves::core::to_bytes32(range_start);
+            ckp.range_end = bchaves::core::to_bytes32(range_end);
+            ckp.threads = num_threads;
+            ckp.batch_size = static_cast<std::uint32_t>(kFleetSize);
+            ckp.progress_primary = total_hops.load(std::memory_order_relaxed);
+            ckp.progress_secondary = options.wild_ratio;
+            ckp.worker_currents = snapshot_worker_states(worker_states);
+            ckp.timestamp = static_cast<std::uint64_t>(std::time(nullptr));
+            std::string err;
+            if (!bchaves::system::save_checkpoint(checkpoint_path, ckp, err)) {
+                std::cerr << "\n[!] Falha ao salvar checkpoint do kangaroo: " << err << "\n";
+            }
+            last_checkpoint = now;
         }
 
         // Dump de emergência se RAM atingir o limite
@@ -637,6 +789,25 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     if (persist_traps && !found.load() && total_traps_in_ram.load() > 0) {
         std::cout << "[+] Salvando armadilhas antes de encerrar...\n";
         dump_shards_to_disk(trap_dir, shards, range_start, range_end);
+    }
+
+    if (g_stop_requested && !found.load() && options.checkpoint_enabled && !options.benchmark) {
+        bchaves::system::CheckpointState ckp{};
+        ckp.algorithm = "kangaroo";
+        ckp.range_start = bchaves::core::to_bytes32(range_start);
+        ckp.range_end = bchaves::core::to_bytes32(range_end);
+        ckp.threads = num_threads;
+        ckp.batch_size = static_cast<std::uint32_t>(kFleetSize);
+        ckp.progress_primary = total_hops.load(std::memory_order_relaxed);
+        ckp.progress_secondary = options.wild_ratio;
+        ckp.worker_currents = snapshot_worker_states(worker_states);
+        ckp.timestamp = static_cast<std::uint64_t>(std::time(nullptr));
+        std::string err;
+        if (bchaves::system::save_checkpoint(checkpoint_path, ckp, err)) {
+            std::cout << "[+] Checkpoint do kangaroo salvo com sucesso.\n";
+        } else {
+            std::cerr << "[!] Falha ao salvar checkpoint final do kangaroo: " << err << "\n";
+        }
     }
 
     if (found.load()) {

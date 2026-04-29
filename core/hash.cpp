@@ -28,8 +28,10 @@ std::once_flag g_dispatch_once;
 
 void init_dispatch() {
     std::call_once(g_dispatch_once, []() {
-        auto info = bchaves::system::detect_hardware();
-        g_use_shani = (info.features & bchaves::system::cpu_sha_ni) != 0;
+        // O backend SHA-NI ainda nao implementa a rodada completa nem a
+        // acumulacao final do estado. Mantemos o despacho desabilitado
+        // ate que a versao intrinseca seja corrigida e validada.
+        g_use_shani = false;
     });
 }
 

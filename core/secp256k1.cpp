@@ -15,6 +15,116 @@
 
 namespace bchaves::core {
 
+namespace {
+
+void mul_wide_256(const BigInt& a, const BigInt& b, std::uint64_t out[8]) {
+    for (std::size_t i = 0; i < 8; ++i) out[i] = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        unsigned __int128 carry = 0;
+        for (std::size_t j = 0; j < 4; ++j) {
+            const unsigned __int128 cur =
+                static_cast<unsigned __int128>(a.limbs[i]) * b.limbs[j] + out[i + j] + carry;
+            out[i + j] = static_cast<std::uint64_t>(cur);
+            carry = cur >> 64u;
+        }
+        for (std::size_t k = i + 4; carry != 0 && k < 8; ++k) {
+            const unsigned __int128 cur = static_cast<unsigned __int128>(out[k]) + carry;
+            out[k] = static_cast<std::uint64_t>(cur);
+            carry = cur >> 64u;
+        }
+    }
+}
+
+int compare_5_to_4(const std::array<std::uint64_t, 5>& lhs, const BigInt& rhs) {
+    if (lhs[4] != 0) return 1;
+    for (int i = 3; i >= 0; --i) {
+        if (lhs[static_cast<std::size_t>(i)] != rhs.limbs[static_cast<std::size_t>(i)]) {
+            return lhs[static_cast<std::size_t>(i)] < rhs.limbs[static_cast<std::size_t>(i)] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+void sub_5_by_4(std::array<std::uint64_t, 5>& lhs, const BigInt& rhs) {
+    std::uint64_t borrow = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        const unsigned __int128 left = lhs[i];
+        const unsigned __int128 right = static_cast<unsigned __int128>(rhs.limbs[i]) + borrow;
+        if (left >= right) {
+            lhs[i] = static_cast<std::uint64_t>(left - right);
+            borrow = 0;
+        } else {
+            lhs[i] = static_cast<std::uint64_t>((static_cast<unsigned __int128>(1) << 64u) + left - right);
+            borrow = 1;
+        }
+    }
+    if (borrow != 0) {
+        lhs[4] -= borrow;
+    }
+}
+
+BigInt reduce_wide_mod(const std::uint64_t wide[8], const BigInt& mod) {
+    std::array<std::uint64_t, 5> rem{};
+    for (int bit = 511; bit >= 0; --bit) {
+        std::uint64_t carry = 0;
+        for (std::size_t limb = 0; limb < rem.size(); ++limb) {
+            const std::uint64_t next_carry = rem[limb] >> 63u;
+            rem[limb] = (rem[limb] << 1u) | carry;
+            carry = next_carry;
+        }
+        const std::size_t word = static_cast<std::size_t>(bit / 64);
+        const std::size_t shift = static_cast<std::size_t>(bit % 64);
+        rem[0] |= (wide[word] >> shift) & 1ULL;
+
+        if (compare_5_to_4(rem, mod) >= 0) {
+            sub_5_by_4(rem, mod);
+        }
+    }
+
+    BigInt out;
+    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = rem[i];
+    return out;
+}
+
+BigInt add_mod_exact(const BigInt& a, const BigInt& b, const BigInt& mod) {
+    std::array<std::uint64_t, 5> sum{};
+    unsigned __int128 carry = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        carry = static_cast<unsigned __int128>(a.limbs[i]) + b.limbs[i] + carry;
+        sum[i] = static_cast<std::uint64_t>(carry);
+        carry >>= 64u;
+    }
+    sum[4] = static_cast<std::uint64_t>(carry);
+    if (compare_5_to_4(sum, mod) >= 0) {
+        sub_5_by_4(sum, mod);
+    }
+    BigInt out;
+    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = sum[i];
+    return out;
+}
+
+BigInt sub_mod_exact(const BigInt& a, const BigInt& b, const BigInt& mod) {
+    if (a >= b) {
+        return a - b;
+    }
+
+    std::array<std::uint64_t, 5> value{};
+    unsigned __int128 carry = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        carry = static_cast<unsigned __int128>(a.limbs[i]) + mod.limbs[i] + carry;
+        value[i] = static_cast<std::uint64_t>(carry);
+        carry >>= 64u;
+    }
+    value[4] = static_cast<std::uint64_t>(carry);
+    sub_5_by_4(value, b);
+
+    BigInt out;
+    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = value[i];
+    return out;
+}
+
+}  // namespace
+
 // BigInt methods
 BigInt::BigInt(std::uint64_t value) {
     limbs[0] = value;
@@ -159,17 +269,9 @@ BigInt& operator--(BigInt& value) {
 // BigInt Multiplication
 BigInt operator*(const BigInt& lhs, const BigInt& rhs) {
     std::uint64_t wide[8]{};
-    for (std::size_t i = 0; i < 4; ++i) {
-        unsigned __int128 carry = 0;
-        for (std::size_t j = 0; j < 4; ++j) {
-            unsigned __int128 prod = (unsigned __int128)lhs.limbs[i] * rhs.limbs[j] + wide[i+j] + carry;
-            wide[i+j] = (std::uint64_t)prod;
-            carry = prod >> 64;
-        }
-        wide[i+4] = (std::uint64_t)carry;
-    }
+    mul_wide_256(lhs, rhs, wide);
     BigInt out;
-    for(int i=0; i<4; ++i) out.limbs[i] = wide[i];
+    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = wide[i];
     return out;
 }
 
@@ -179,9 +281,9 @@ BigInt operator%(const BigInt& lhs, const BigInt& rhs) {
     BigInt rem = lhs;
     BigInt d = rhs;
     int shift = 0;
-    while (!(d.limbs[3] & 0x8000000000000000ULL) && (d << 1) <= lhs) {
+    while (!(d.limbs[3] & 0x8000000000000000ULL) && (d << 1) <= rem) {
         d = (d << 1);
-        shift++;
+        ++shift;
     }
     for (int i = 0; i <= shift; ++i) {
         if (rem >= d) rem -= d;
@@ -192,17 +294,19 @@ BigInt operator%(const BigInt& lhs, const BigInt& rhs) {
 
 BigInt operator/(const BigInt& lhs, const BigInt& rhs) {
     if (rhs.is_zero()) return {};
-    BigInt quote, rem = lhs, d = rhs;
+    BigInt quote;
+    BigInt rem = lhs;
+    BigInt d = rhs;
     int shift = 0;
-    while (!(d.limbs[3] & 0x8000000000000000ULL) && (d << 1) <= lhs) {
+    while (!(d.limbs[3] & 0x8000000000000000ULL) && (d << 1) <= rem) {
         d = (d << 1);
-        shift++;
+        ++shift;
     }
     for (int i = 0; i <= shift; ++i) {
         if (rem >= d) {
             rem -= d;
-            int bit_pos = shift - i;
-            quote.limbs[bit_pos / 64] |= (1ULL << (bit_pos % 64));
+            const int bit_pos = shift - i;
+            quote.limbs[static_cast<std::size_t>(bit_pos / 64)] |= (1ULL << (bit_pos % 64));
         }
         d = (d >> 1);
     }
@@ -221,22 +325,11 @@ bool mul_small_in_place(BigInt& value, std::uint32_t multiplier) {
 }
 
 BigInt mod_add(const BigInt& a, const BigInt& b, const BigInt& p) {
-    BigInt res;
-    unsigned __int128 carry = 0;
-    for (int i = 0; i < 4; ++i) {
-        carry += (unsigned __int128)a.limbs[i] + b.limbs[i];
-        res.limbs[i] = (std::uint64_t)carry;
-        carry >>= 64;
-    }
-    if (carry || res >= p) {
-        res -= p;
-    }
-    return res;
+    return add_mod_exact(a, b, p);
 }
 
 BigInt mod_sub(const BigInt& a, const BigInt& b, const BigInt& p) {
-    if (a >= b) return a - b;
-    return (a + p) - b;
+    return sub_mod_exact(a, b, p);
 }
 
 // Fast 256-bit reduction for P = 2^256 - 2^32 - 977
@@ -285,102 +378,20 @@ void reduce_p256_64(std::uint64_t* res, const std::uint64_t* wide) {
 }
 
 BigInt mod_mul_k1(const BigInt& a, const BigInt& b) {
-    uint64_t wide[8]{};
-    
-    // a[0]
-    unsigned __int128 p00 = (unsigned __int128)a.limbs[0] * b.limbs[0]; wide[0] = (uint64_t)p00;
-    unsigned __int128 p01 = (unsigned __int128)a.limbs[0] * b.limbs[1] + (p00 >> 64); wide[1] = (uint64_t)p01;
-    unsigned __int128 p02 = (unsigned __int128)a.limbs[0] * b.limbs[2] + (p01 >> 64); wide[2] = (uint64_t)p02;
-    unsigned __int128 p03 = (unsigned __int128)a.limbs[0] * b.limbs[3] + (p02 >> 64); wide[3] = (uint64_t)p03;
-    wide[4] = (uint64_t)(p03 >> 64);
-
-    // a[1]
-    unsigned __int128 p10 = (unsigned __int128)a.limbs[1] * b.limbs[0] + wide[1]; wide[1] = (uint64_t)p10;
-    unsigned __int128 p11 = (unsigned __int128)a.limbs[1] * b.limbs[1] + wide[2] + (p10 >> 64); wide[2] = (uint64_t)p11;
-    unsigned __int128 p12 = (unsigned __int128)a.limbs[1] * b.limbs[2] + wide[3] + (p11 >> 64); wide[3] = (uint64_t)p12;
-    unsigned __int128 p13 = (unsigned __int128)a.limbs[1] * b.limbs[3] + wide[4] + (p12 >> 64); wide[4] = (uint64_t)p13;
-    wide[5] = (uint64_t)(p13 >> 64);
-
-    // a[2]
-    unsigned __int128 p20 = (unsigned __int128)a.limbs[2] * b.limbs[0] + wide[2]; wide[2] = (uint64_t)p20;
-    unsigned __int128 p21 = (unsigned __int128)a.limbs[2] * b.limbs[1] + wide[3] + (p20 >> 64); wide[3] = (uint64_t)p21;
-    unsigned __int128 p22 = (unsigned __int128)a.limbs[2] * b.limbs[2] + wide[4] + (p21 >> 64); wide[4] = (uint64_t)p22;
-    unsigned __int128 p23 = (unsigned __int128)a.limbs[2] * b.limbs[3] + wide[5] + (p22 >> 64); wide[5] = (uint64_t)p23;
-    wide[6] = (uint64_t)(p23 >> 64);
-
-    // a[3]
-    unsigned __int128 p30 = (unsigned __int128)a.limbs[3] * b.limbs[0] + wide[3]; wide[3] = (uint64_t)p30;
-    unsigned __int128 p31 = (unsigned __int128)a.limbs[3] * b.limbs[1] + wide[4] + (p30 >> 64); wide[4] = (uint64_t)p31;
-    unsigned __int128 p32 = (unsigned __int128)a.limbs[3] * b.limbs[2] + wide[5] + (p31 >> 64); wide[5] = (uint64_t)p32;
-    unsigned __int128 p33 = (unsigned __int128)a.limbs[3] * b.limbs[3] + wide[6] + (p32 >> 64); wide[6] = (uint64_t)p33;
-    wide[7] = (uint64_t)(p33 >> 64);
-
-    BigInt res;
-    reduce_p256_64(res.limbs.data(), wide);
-    for(int j=0; j<2; ++j) {
-        if (res >= kFieldPrime) res -= kFieldPrime;
-    }
-    return res;
+    std::uint64_t wide[8]{};
+    mul_wide_256(a, b, wide);
+    return reduce_wide_mod(wide, kFieldPrime);
 }
 
 BigInt mod_square_k1(const BigInt& a) {
-    uint64_t wide[8]{};
-    unsigned __int128 p, carry;
-    
-    // a[0]*a[1]
-    p = (unsigned __int128)a.limbs[0] * a.limbs[1]; wide[1] = (uint64_t)p; carry = p >> 64;
-    // a[0]*a[2]
-    p = (unsigned __int128)a.limbs[0] * a.limbs[2] + carry; wide[2] = (uint64_t)p; carry = p >> 64;
-    // a[0]*a[3]
-    p = (unsigned __int128)a.limbs[0] * a.limbs[3] + carry; wide[3] = (uint64_t)p; wide[4] = (uint64_t)(p >> 64);
-    
-    // a[1]*a[2]
-    p = (unsigned __int128)a.limbs[1] * a.limbs[2] + wide[3]; wide[3] = (uint64_t)p; carry = p >> 64;
-    // a[1]*a[3]
-    p = (unsigned __int128)a.limbs[1] * a.limbs[3] + wide[4] + carry; wide[4] = (uint64_t)p; wide[5] = (uint64_t)(p >> 64);
-
-    // a[2]*a[3]
-    p = (unsigned __int128)a.limbs[2] * a.limbs[3] + wide[5]; wide[5] = (uint64_t)p; wide[6] = (uint64_t)(p >> 64);
-
-    uint64_t c2 = 0;
-    for(int i=1; i<7; ++i) {
-        uint64_t val = wide[i];
-        wide[i] = (val << 1) | c2;
-        c2 = val >> 63;
-    }
-    wide[7] = c2;
-
-    // Diagonal
-    p = (unsigned __int128)a.limbs[0] * a.limbs[0]; wide[0] = (uint64_t)p; carry = p >> 64;
-    p = (unsigned __int128)a.limbs[1] * a.limbs[1] + wide[2] + carry; wide[2] = (uint64_t)p; carry = p >> 64;
-    p = (unsigned __int128)a.limbs[2] * a.limbs[2] + wide[4] + carry; wide[4] = (uint64_t)p; carry = p >> 64;
-    p = (unsigned __int128)a.limbs[3] * a.limbs[3] + wide[6] + carry; wide[6] = (uint64_t)p; wide[7] += (uint64_t)(p >> 64);
-
-    BigInt res;
-    reduce_p256_64(res.limbs.data(), wide);
-    for(int j=0; j<2; ++j) {
-        if (res >= kFieldPrime) res -= kFieldPrime;
-    }
-    return res;
+    return mod_mul_k1(a, a);
 }
 
 // Optimized mod_mul
 BigInt mod_mul(const BigInt& a, const BigInt& b, const BigInt& p) {
-    uint64_t wide[8]{};
-    for (int i = 0; i < 4; ++i) {
-        unsigned __int128 carry = 0;
-        for (int j = 0; j < 4; ++j) {
-            unsigned __int128 prod = (unsigned __int128)a.limbs[i] * b.limbs[j] + wide[i+j] + carry;
-            wide[i+j] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        wide[i+4] = (uint64_t)carry;
-    }
-    
-    BigInt res;
-    reduce_p256_64(res.limbs.data(), wide);
-    while(res >= p) res -= p;
-    return res;
+    std::uint64_t wide[8]{};
+    mul_wide_256(a, b, wide);
+    return reduce_wide_mod(wide, p);
 }
 
 std::array<std::uint8_t, 32> to_bytes32(const BigInt& value) {
@@ -422,8 +433,6 @@ std::string to_hex(const std::vector<std::uint8_t>& data) {
     return out;
 }
 
-namespace {
-
 BigInt mod_pow_k1(BigInt base, BigInt exponent) {
     BigInt result(1);
     while (!exponent.is_zero()) {
@@ -447,34 +456,26 @@ bool is_point_on_curve(const BigInt& x, const BigInt& y) {
     return lhs == rhs;
 }
 
-}  // namespace
-
 // Modular Inversion using Extended Euclidean Algorithm
 BigInt mod_inv(const BigInt& a, const BigInt& p) {
     if (a.is_zero()) return BigInt(0);
-    BigInt u = a, v = p, x1 = 1, x2 = 0;
-    while (!u.is_zero() && u != 1) {
-        while (!u.is_odd()) {
-            u = u >> 1;
-            if (x1.is_odd()) x1 += p;
-            x1 = x1 >> 1;
+    if (p == kFieldPrime) {
+        return mod_pow_k1(a, kFieldPrime - BigInt(2));
+    }
+
+    BigInt exponent = p - BigInt(2);
+    BigInt result(1);
+    BigInt base = a % p;
+    while (!exponent.is_zero()) {
+        if (exponent.is_odd()) {
+            result = mod_mul(result, base, p);
         }
-        while (!v.is_odd()) {
-            v = v >> 1;
-            if (x2.is_odd()) x2 += p;
-            x2 = x2 >> 1;
-        }
-        if (u >= v) {
-            u -= v;
-            if (x1 < x2) x1 += p;
-            x1 -= x2;
-        } else {
-            v -= u;
-            if (x2 < x1) x2 += p;
-            x2 -= x1;
+        exponent = exponent >> 1;
+        if (!exponent.is_zero()) {
+            base = mod_mul(base, base, p);
         }
     }
-    return x1;
+    return result;
 }
 
 PointJacobian to_jacobian(const BigInt& x, const BigInt& y) {

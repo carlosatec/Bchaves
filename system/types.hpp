@@ -126,6 +126,7 @@ struct BsgsOptions : CommonOptions {
 
 struct KangarooOptions : CommonOptions {
     std::string range;
+    std::optional<std::filesystem::path> trap_dir;  // --trap-dir: diretório de armadilhas (default "traps")
     bool no_load = false;         // --no-load: pula o Cold Boot de armadilhas
     uint32_t wild_ratio  = 50;    // --wild <N>: % de cangurus selvagens (default 50%)
     uint32_t tame_ratio  = 50;    // --tame <N>: % de cangurus domesticados (default 50%)
@@ -150,6 +151,8 @@ struct CheckpointState {
     std::uint64_t hybrid_chunk_step    = 0;
     std::uint64_t hybrid_chunk_size    = 0;
     std::uint64_t hybrid_total_chunks  = 0;
+    // v6: estado opcional por worker para retomada exata
+    std::vector<std::array<std::uint8_t, 32>> worker_currents;
 };
 
 std::string to_string(TargetType value);

@@ -12,6 +12,9 @@
 #include "core/cuckoo.hpp"
 #include "core/hash.hpp"
 #include "system/checkpoint.hpp"
+
+#include <algorithm>
+#include <ctime>
 #include <iostream>
 #include <vector>
 #include <thread>
@@ -20,17 +23,48 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <unordered_map>
 
 namespace bchaves::engine {
 
+namespace {
+
+bool ceil_div_bigint_u64_to_u64(const bchaves::core::BigInt& num,
+                                std::uint64_t denom,
+                                std::uint64_t& out) {
+    if (denom == 0) {
+        return false;
+    }
+    __uint128_t rem = 0;
+    std::uint64_t quotient[4] = {};
+    for (int i = 3; i >= 0; --i) {
+        const __uint128_t cur = (rem << 64) | num.limbs[i];
+        quotient[i] = static_cast<std::uint64_t>(cur / denom);
+        rem = cur % denom;
+    }
+    if (quotient[1] != 0 || quotient[2] != 0 || quotient[3] != 0) {
+        return false;
+    }
+    out = quotient[0];
+    if (rem != 0) {
+        if (out == std::numeric_limits<std::uint64_t>::max()) {
+            return false;
+        }
+        ++out;
+    }
+    return true;
+}
+
+}  // namespace
+
 
 struct Entry {
-    uint64_t hash;
+    bchaves::core::BigInt x;  // full 256-bit x-coordinate
     bool odd;
     uint64_t index;
     bool operator<(const Entry& other) const {
-        if (hash != other.hash) return hash < other.hash;
+        if (x != other.x) return x < other.x;
         if (odd != other.odd) return odd < other.odd;
         return index < other.index;
     }
@@ -62,15 +96,55 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     }
 
     std::cout << "[+] Iniciando BSGS (Cuckoo Filter Accelerated)\n";
+
+    std::string backend_error;
+    if (!configure_secp256k1_backend(options.secp256k1_backend, backend_error)) {
+        std::cerr << "[E] Falha ao configurar secp256k1: " << backend_error << '\n';
+        return 1;
+    }
     
     uint32_t bits = options.bits;
-    uint32_t b_bits = bits / 2;
-    if (b_bits >= 63) {
+    uint64_t num_baby_steps = 0;
+    if (options.table_k > 0) {
+        if (options.table_k > (std::numeric_limits<std::uint64_t>::max() / 1024ULL)) {
+            std::cerr << "[E] Valor de -k excede o limite suportado.\n";
+            return 1;
+        }
+        num_baby_steps = 1024ULL * options.table_k;
+    } else {
+        const uint32_t b_bits = bits / 2;
+        if (b_bits >= 63) {
+            std::cerr << "[E] BSGS atual suporta no maximo 126 bits por limite de indexacao interna.\n";
+            return 1;
+        }
+        num_baby_steps = 1ULL << b_bits;
+    }
+    if (num_baby_steps == 0) {
+        std::cerr << "[E] Numero de baby steps invalido.\n";
+        return 1;
+    }
+    if (bits > 126) {
         std::cerr << "[E] BSGS atual suporta no maximo 126 bits por limite de indexacao interna.\n";
         return 1;
     }
-    uint64_t num_baby_steps = 1ULL << b_bits;
-    std::cout << "[+] Baby Steps: 2^" << b_bits << " (" << num_baby_steps << ")\n";
+    std::cout << "[+] Baby Steps: " << num_baby_steps;
+    if (options.table_k > 0) {
+        std::cout << " (-k " << options.table_k << ")";
+    }
+    std::cout << "\n";
+
+    bchaves::core::BigInt range_start;
+    if (bits == 1) {
+        range_start = bchaves::core::BigInt(1);
+    } else {
+        range_start = bchaves::core::BigInt(1) << (bits - 1);
+    }
+    const bchaves::core::BigInt range_end = (bchaves::core::BigInt(1) << bits) - bchaves::core::BigInt(1);
+    std::uint64_t max_giant_steps = 0;
+    if (!ceil_div_bigint_u64_to_u64(range_end, num_baby_steps, max_giant_steps)) {
+        std::cerr << "[E] O range atual exige mais de 2^64 giant steps. Aumente -k ou reduza -b.\n";
+        return 1;
+    }
 
     // Alvo Y (Ponto Secp256k1)
     auto target_load = bchaves::system::load_targets(options.target_path, true); 
@@ -110,7 +184,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
             uint64_t h = batch_affine[k].x.limbs[0];
             filter.insert(h);
             int s = h % 16;
-            shards[s].table.push_back({h, batch_affine[k].y.is_odd(), i + k});
+            shards[s].table.push_back({batch_affine[k].x, batch_affine[k].y.is_odd(), i + k});
         }
 
         if (i % 1000000 == 0) std::cout << "\r    " << (i/1000000) << "M pontos..." << std::flush;
@@ -129,16 +203,21 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
 
     // FASE 2: Giant Steps
     bchaves::core::BigInt step_size(num_baby_steps);
-    bchaves::core::Secp256k1Point giant_step_point = bchaves::core::secp256k1_multiply(step_size);
-    bchaves::core::Secp256k1Point neg_step = giant_step_point;
-    neg_step.y = bchaves::core::mod_sub(bchaves::core::BigInt(0), neg_step.y, bchaves::core::kFieldPrime);
 
     std::atomic<bool> found{false};
     bchaves::core::BigInt solution;
     std::atomic<uint64_t> giant_count{0};
+    std::atomic<std::uint32_t> active_workers{0};
 
     bchaves::system::CheckpointState checkpoint;
+    checkpoint.algorithm = "bsgs";
+    checkpoint.progress_secondary = options.bits;
+    checkpoint.current = bchaves::core::to_bytes32(step_size);
     auto worker = [&](int tid, int num_threads) {
+        struct WorkerExitGuard {
+            std::atomic<std::uint32_t>& counter;
+            ~WorkerExitGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+        } guard{active_workers};
         bchaves::system::pin_thread_to_core(static_cast<std::uint32_t>(tid));
         bchaves::core::BigInt giant_step_idx(tid);
         if (checkpoint.progress_primary > 0) {
@@ -165,27 +244,32 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
         uint64_t batch_j[kGiantBatch];
 
         uint64_t j = tid + checkpoint.progress_primary;
-        while (!found.load()) {
-            for (size_t k = 0; k < kGiantBatch; ++k) {
-                batch_gj[k] = current_giant_jac;
-                batch_j[k] = j;
+        while (!found.load(std::memory_order_relaxed)) {
+            std::size_t batch_count = 0;
+            for (; batch_count < kGiantBatch && j < max_giant_steps; ++batch_count) {
+                batch_gj[batch_count] = current_giant_jac;
+                batch_j[batch_count] = j;
                 current_giant_jac = bchaves::core::add_points_mixed(current_giant_jac, big_jump);
                 j += num_threads;
             }
+            if (batch_count == 0) {
+                return;
+            }
 
-            bchaves::core::batch_normalize(batch_gj, batch_ga, kGiantBatch);
+            bchaves::core::batch_normalize(batch_gj, batch_ga, batch_count);
 
-            for (size_t k = 0; k < kGiantBatch; ++k) {
+            for (size_t k = 0; k < batch_count; ++k) {
                 uint64_t h = batch_ga[k].x.limbs[0];
                 if (filter.lookup(h)) {
                     int s = h % 16;
                     auto& st = shards[s].table;
-                    auto it = std::lower_bound(st.begin(), st.end(), Entry{h, batch_ga[k].y.is_odd(), 0});
-                    while (it != st.end() && it->hash == h && it->odd == batch_ga[k].y.is_odd()) {
+                    Entry probe{batch_ga[k].x, batch_ga[k].y.is_odd(), 0};
+                    auto it = std::lower_bound(st.begin(), st.end(), probe);
+                    while (it != st.end() && it->x == batch_ga[k].x && it->odd == batch_ga[k].y.is_odd()) {
                         bchaves::core::BigInt i_val(it->index);
                         bchaves::core::BigInt j_val(batch_j[k]);
                         bchaves::core::BigInt candidate = (j_val * step_size) + i_val;
-                        if (matches_target(candidate, target_y)) {
+                        if (candidate >= range_start && candidate <= range_end && matches_target(candidate, target_y)) {
                             solution = candidate;
                             found = true;
                             return;
@@ -194,12 +278,12 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
                     }
                 }
             }
-            giant_count += kGiantBatch;
+            giant_count += batch_count;
         }
     };
 
 
-    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
+    auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads, options.table_k);
     std::uint32_t num_threads = tune.threads;
 
     const std::string checkpoint_name = "bsgs_" + std::to_string(options.bits) + "bit.ckp";
@@ -208,7 +292,9 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     if (options.checkpoint_enabled && std::filesystem::exists(checkpoint_path)) {
         std::string err;
         if (bchaves::system::load_checkpoint(checkpoint_path, checkpoint, err)) {
-            if (checkpoint.algorithm == "bsgs" && checkpoint.progress_secondary == options.bits) {
+            if (checkpoint.algorithm == "bsgs"
+                && checkpoint.progress_secondary == options.bits
+                && checkpoint.current == bchaves::core::to_bytes32(step_size)) {
                 std::cout << "[+] Checkpoint detectado. Retomando de Giant Step: " << checkpoint.progress_primary << "\n";
             } else {
                 std::cerr << "[!] Checkpoint incompativel. Ignorando.\n";
@@ -220,10 +306,13 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
 
     std::vector<std::thread> threads;
-    for(uint32_t i=0; i<num_threads; ++i) threads.emplace_back(worker, i, num_threads);
+    for (uint32_t i = 0; i < num_threads; ++i) {
+        active_workers.fetch_add(1, std::memory_order_relaxed);
+        threads.emplace_back(worker, i, num_threads);
+    }
 
     auto last_checkpoint = std::chrono::steady_clock::now();
-    while (!found.load()) {
+    while (!found.load() && active_workers.load(std::memory_order_relaxed) > 0) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         auto now = std::chrono::steady_clock::now();
         std::cout << "\r[*] Giant Steps: " << giant_count.load() + checkpoint.progress_primary << std::flush;
@@ -234,6 +323,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
             bchaves::system::CheckpointState ckp;
             ckp.algorithm = "bsgs";
             ckp.progress_secondary = options.bits;
+            ckp.current = bchaves::core::to_bytes32(step_size);
             ckp.progress_primary = giant_count.load() + checkpoint.progress_primary;
             ckp.timestamp = static_cast<uint64_t>(std::time(nullptr));
             
@@ -255,6 +345,8 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
                 "BSGS Search (bits:" + std::to_string(options.bits) + ")",
                 !options.benchmark);
         }
+    } else {
+        std::cout << "[!] Exhausted: alvo nao encontrado no range solicitado.\n";
     }
 
     return 0;

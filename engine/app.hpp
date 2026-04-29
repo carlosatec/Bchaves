@@ -31,6 +31,7 @@ struct AddressMatcher {
 int run_address(const bchaves::system::AddressOptions& options);
 int run_bsgs(const bchaves::system::BsgsOptions& options);
 int run_kangaroo(const bchaves::system::KangarooOptions& options);
+bool configure_secp256k1_backend(bchaves::system::Secp256k1BackendPreference preference, std::string& error);
 
 /**
  * @brief Reporta uma chave encontrada: exibe na tela e salva em found.txt.

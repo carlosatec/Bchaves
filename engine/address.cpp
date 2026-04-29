@@ -16,12 +16,15 @@
 #include "system/hardware.hpp"
 #include "system/targets.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -68,6 +71,40 @@ static std::atomic<uint64_t> g_chunk_counter{0};
 static uint64_t g_hybrid_chunk_size   = 0;
 static uint64_t g_hybrid_total_chunks = 0;
 static uint64_t g_chunk_step          = 0;
+
+struct SequentialWorkerState {
+    std::mutex mutex;
+    bchaves::core::BigInt next_key{};
+};
+
+static bchaves::core::BigInt bytes32_to_bigint(const std::array<std::uint8_t, 32>& bytes) {
+    bchaves::core::BigInt out;
+    for (int i = 0; i < 4; ++i) {
+        std::uint64_t limb = 0;
+        for (int j = 0; j < 8; ++j) {
+            limb |= static_cast<std::uint64_t>(bytes[31 - (i * 8 + j)]) << (j * 8);
+        }
+        out.limbs[i] = limb;
+    }
+    return out;
+}
+
+static std::vector<std::array<std::uint8_t, 32>> snapshot_worker_currents(
+    const std::vector<std::unique_ptr<SequentialWorkerState>>& workers) {
+    std::vector<std::array<std::uint8_t, 32>> snapshot;
+    snapshot.reserve(workers.size());
+    for (const auto& worker : workers) {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        snapshot.push_back(bchaves::core::to_bytes32(worker->next_key));
+    }
+    return snapshot;
+}
+
+static bool matcher_contains_hash(const AddressMatcher& matcher, const std::uint8_t* hash160) {
+    std::array<std::uint8_t, 20> candidate{};
+    std::memcpy(candidate.data(), hash160, candidate.size());
+    return std::binary_search(matcher.hashes.begin(), matcher.hashes.end(), candidate);
+}
 
 bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher) {
     std::cout << "[+] Carregando: " << path.string() << '\n';
@@ -420,7 +457,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
     std::signal(SIGINT, handle_signal);
 
     std::string backend_error;
-    if (!bchaves::core::select_secp256k1_backend(bchaves::core::Secp256k1BackendKind::portable, backend_error)) {
+    if (!configure_secp256k1_backend(options.secp256k1_backend, backend_error)) {
         std::cerr << "[E] Falha ao configurar secp256k1: " << backend_error << '\n';
         return 1;
     }
@@ -455,6 +492,10 @@ int run_address(const bchaves::system::AddressOptions& options) {
     checkpoint.algorithm = "address";
     checkpoint.range_start = bchaves::core::to_bytes32(start);
     checkpoint.range_end = bchaves::core::to_bytes32(end);
+    checkpoint.mode = options.mode;
+    checkpoint.type = options.type;
+    checkpoint.threads = num_threads;
+    checkpoint.batch_size = tune.batch_size;
 
     if (options.mode == bchaves::system::SearchMode::hybrid) {
         static constexpr uint64_t kBatch = 1024;
@@ -509,13 +550,29 @@ int run_address(const bchaves::system::AddressOptions& options) {
                   << " total=" << g_hybrid_total_chunks
                   << " step=" << g_chunk_step << "\n";
     } else {
+        checkpoint.algorithm = "address-sequential";
         if (checkpoint_enabled && std::filesystem::exists(sequential_checkpoint_path)) {
             std::string err;
             if (bchaves::system::load_checkpoint(sequential_checkpoint_path, checkpoint, err)) {
+                const bool compatible =
+                    checkpoint.algorithm == "address-sequential" &&
+                    checkpoint.mode == bchaves::system::SearchMode::sequential &&
+                    checkpoint.type == options.type &&
+                    checkpoint.threads == num_threads &&
+                    checkpoint.batch_size == tune.batch_size &&
+                    checkpoint.worker_currents.size() == num_threads;
+                if (!compatible) {
+                    std::cerr << "\n[!] ERRO CRITICO DE CHECKPOINT [!]\n";
+                    std::cerr << "O checkpoint sequencial existente nao e compativel com a retomada exata.\n";
+                    std::cerr << "Verifique modo, tipo, threads, batch ou remova o arquivo '"
+                              << sequential_checkpoint_path.string() << "' para reiniciar.\n\n";
+                    return 1;
+                }
                 total_processed = checkpoint.progress_primary;
-                bchaves::core::BigInt prog(total_processed.load());
-                start = start + prog;
-                std::cout << "[+] Retomando de: " << bchaves::core::bigint_to_hex(start) << " (Progresso: " << total_processed.load() << ")\n";
+                std::cout << "[+] Checkpoint sequencial detectado. Retomando estados exatos por thread.\n";
+                std::cout << "    Progresso: " << total_processed.load() << " chaves processadas\n";
+            } else {
+                std::cerr << "[!] Falha ao ler checkpoint: " << err << "\n";
             }
         }
     }
@@ -523,6 +580,19 @@ int run_address(const bchaves::system::AddressOptions& options) {
     std::vector<std::thread> workers;
     std::atomic<std::uint32_t> active_workers{0};
     const size_t kBatchSize = tune.batch_size;
+    std::vector<std::unique_ptr<SequentialWorkerState>> sequential_worker_states;
+    if (options.mode != bchaves::system::SearchMode::hybrid) {
+        sequential_worker_states.reserve(num_threads);
+        for (std::uint32_t i = 0; i < num_threads; ++i) {
+            auto state = std::make_unique<SequentialWorkerState>();
+            if (checkpoint.worker_currents.size() == num_threads) {
+                state->next_key = bytes32_to_bigint(checkpoint.worker_currents[i]);
+            } else {
+                state->next_key = start + (bchaves::core::BigInt(i) * bchaves::core::BigInt(num_threads));
+            }
+            sequential_worker_states.push_back(std::move(state));
+        }
+    }
 
     if (options.mode == bchaves::system::SearchMode::hybrid) {
          for (std::uint32_t i = 0; i < num_threads; ++i) {
@@ -541,23 +611,26 @@ int run_address(const bchaves::system::AddressOptions& options) {
     } else {
         for (std::uint32_t i = 0; i < num_threads; ++i) {
             active_workers.fetch_add(1, std::memory_order_relaxed);
-            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex, &active_workers]() {
+            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex, &active_workers, &sequential_worker_states, &end]() {
                 struct WorkerExitGuard {
                     std::atomic<std::uint32_t>& counter;
                     ~WorkerExitGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
                 } guard{active_workers};
                 bchaves::system::pin_thread_to_core(i);
-                bchaves::core::BigInt current = start;
-                bchaves::core::BigInt thread_offset(i);
-                bchaves::core::BigInt thread_step(num_threads);
-                current += thread_offset * thread_step; 
-                
+                SequentialWorkerState& worker_state = *sequential_worker_states[i];
+                bchaves::core::BigInt current;
+                {
+                    std::lock_guard<std::mutex> lock(worker_state.mutex);
+                    current = worker_state.next_key;
+                }
+                if (current > end) {
+                    return;
+                }
+
                 const bchaves::core::Secp256k1Point start_point = bchaves::core::secp256k1_multiply(current);
                 bchaves::core::PointJacobian p_jac = bchaves::core::to_jacobian(start_point.x, start_point.y);
                 bchaves::core::BigInt step_g_key(num_threads);
-                bchaves::core::BigInt step_g_batch_key(num_threads * kBatchSize);
                 bchaves::core::Secp256k1Point step_g = bchaves::core::secp256k1_multiply(step_g_key);
-                bchaves::core::Secp256k1Point step_g_batch = bchaves::core::secp256k1_multiply(step_g_batch_key);
 
                 bchaves::core::PointJacobian batch_p[kBatchSize];
                 bchaves::core::Secp256k1Point batch_affine[kBatchSize];
@@ -568,14 +641,18 @@ int run_address(const bchaves::system::AddressOptions& options) {
                     
                     bchaves::core::PointJacobian temp_p = p_jac;
                     bchaves::core::BigInt temp_key = current;
-                    for (size_t k = 0; k < kBatchSize; ++k) {
-                        batch_p[k] = temp_p;
-                        batch_keys[k] = temp_key;
+                    size_t valid_batch_size = 0;
+                    for (; valid_batch_size < kBatchSize && temp_key <= end; ++valid_batch_size) {
+                        batch_p[valid_batch_size] = temp_p;
+                        batch_keys[valid_batch_size] = temp_key;
                         temp_p = bchaves::core::add_points_mixed(temp_p, step_g);
                         temp_key += step_g_key;
                     }
+                    if (valid_batch_size == 0) {
+                        break;
+                    }
 
-                    bchaves::core::batch_normalize(batch_p, batch_affine, kBatchSize);
+                    bchaves::core::batch_normalize(batch_p, batch_affine, valid_batch_size);
 
                     std::uint8_t batch_sha_out[8][32];
                     std::uint8_t batch_ripemd_out[8][20];
@@ -585,33 +662,50 @@ int run_address(const bchaves::system::AddressOptions& options) {
                     const std::uint8_t* data_ptr[8];
                     alignas(32) std::uint8_t pub_bufs[8][65];
 
-                    for (size_t k = 0; k < kBatchSize; k += 8) {
+                    for (size_t k = 0; k < valid_batch_size; k += 8) {
+                        const size_t lane_count = std::min<std::size_t>(8, valid_batch_size - k);
                         auto check_batch = [&](bool compress) {
                             size_t p_len = compress ? 33 : 65;
-                            for(int u=0; u<8; ++u) {
-                                bchaves::core::serialize_pubkey(batch_affine[k+u], compress, pub_bufs[u]);
-                                data_ptr[u] = pub_bufs[u];
-                                sha_ptr[u] = batch_sha_out[u];
-                                sha_in_ptr[u] = batch_sha_out[u];
-                                ripemd_ptr[u] = batch_ripemd_out[u];
-                            }
-                            
-                            bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr); 
-                            bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
+                            if (lane_count == 8) {
+                                for (int u = 0; u < 8; ++u) {
+                                    bchaves::core::serialize_pubkey(batch_affine[k + u], compress, pub_bufs[u]);
+                                    data_ptr[u] = pub_bufs[u];
+                                    sha_ptr[u] = batch_sha_out[u];
+                                    sha_in_ptr[u] = batch_sha_out[u];
+                                    ripemd_ptr[u] = batch_ripemd_out[u];
+                                }
 
-                            for(int u=0; u<8; ++u) {
-                                uint64_t filter_hash;
-                                std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
-                                if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                                bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr);
+                                bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
 
-                                for (const auto& target : matcher.hashes) {
-                                    if (std::memcmp(batch_ripemd_out[u], target.data(), 20) == 0) {
-                                        std::lock_guard<std::mutex> lock(found_mutex);
-                                        if (!found.load()) {
-                                            bchaves::core::derive_key_info(batch_keys[k+u], found_key);
-                                            found = true;
-                                        }
+                                for (int u = 0; u < 8; ++u) {
+                                    uint64_t filter_hash;
+                                    std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
+                                    if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                                    if (!matcher_contains_hash(matcher, batch_ripemd_out[u])) continue;
+
+                                    std::lock_guard<std::mutex> lock(found_mutex);
+                                    if (!found.load()) {
+                                        bchaves::core::derive_key_info(batch_keys[k + u], found_key);
+                                        found = true;
                                     }
+                                }
+                                return;
+                            }
+
+                            for (size_t u = 0; u < lane_count; ++u) {
+                                bchaves::core::serialize_pubkey(batch_affine[k + u], compress, pub_bufs[u]);
+                                const auto sha = bchaves::core::sha256(pub_bufs[u], p_len);
+                                const auto ripemd = bchaves::core::ripemd160(sha.data(), sha.size());
+                                uint64_t filter_hash;
+                                std::memcpy(&filter_hash, ripemd.data(), sizeof(uint64_t));
+                                if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                                if (!matcher_contains_hash(matcher, ripemd.data())) continue;
+
+                                std::lock_guard<std::mutex> lock(found_mutex);
+                                if (!found.load()) {
+                                    bchaves::core::derive_key_info(batch_keys[k + u], found_key);
+                                    found = true;
                                 }
                             }
                         };
@@ -626,9 +720,17 @@ int run_address(const bchaves::system::AddressOptions& options) {
                         if (found.load(std::memory_order_relaxed)) break;
                     }
                     
-                    total_processed += kBatchSize;
-                    p_jac = bchaves::core::add_points_mixed(p_jac, step_g_batch);
-                    current += step_g_batch_key;
+                    total_processed += valid_batch_size;
+                    p_jac = temp_p;
+                    current = temp_key;
+                    {
+                        std::lock_guard<std::mutex> lock(worker_state.mutex);
+                        worker_state.next_key = current;
+                    }
+                }
+                {
+                    std::lock_guard<std::mutex> lock(worker_state.mutex);
+                    worker_state.next_key = current;
                 }
             });
         }
@@ -671,7 +773,9 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 const auto ckp_path = hybrid_checkpoint_path();
                 bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
             } else {
+                checkpoint.algorithm = "address-sequential";
                 checkpoint.progress_primary = total_processed.load();
+                checkpoint.worker_currents = snapshot_worker_currents(sequential_worker_states);
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
                 if (bchaves::system::save_checkpoint(sequential_checkpoint_path, checkpoint, err)) {
@@ -708,7 +812,9 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 const auto ckp_path = hybrid_checkpoint_path();
                 bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
             } else {
+                checkpoint.algorithm = "address-sequential";
                 checkpoint.progress_primary = total_processed.load();
+                checkpoint.worker_currents = snapshot_worker_currents(sequential_worker_states);
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
                 if (bchaves::system::save_checkpoint(sequential_checkpoint_path, checkpoint, err)) {

@@ -24,6 +24,9 @@ cd Bchaves
 
 # Compilação Multi-alvo (Windows/Linux)
 make all
+
+# Validação de Integridade Criptográfica (Opcional)
+make test && ./build/crypto_test
 ```
 
 ---
@@ -38,8 +41,6 @@ O motor principal para exploração de puzzles por bits.
 |------|-----------|---------------|
 | `hybrid` | **(Recomendado)** Explorador pseudoaleatório particionado.
 | `sequential` | Busca linear incremental (`start` → `end`). | Ranges pequenos (< 30 bits) |
-| `backward` | Busca linear decrescente (`end` → `start`). | Ranges pequenos |
-| `both` | Busca bidirecional simultânea. | Verificação de extremidades |
 
 #### Exemplo: Puzzle 71 com Modo Hybrid
 ```bash
@@ -65,16 +66,30 @@ O motor principal para exploração de puzzles por bits.
 Baseado no algoritmo de Pollard's Kangaroo para Logaritmo Discreto.
 ```bash
 # Busca em range de 75 bits (calcula 2^74 até 2^75-1 automaticamente)
-./build/kangaroo targets.txt -b 75 -t 12
+./build/kangaroo targets.txt -b 75 -t 12 --trap-dir my_traps/
+
+# Benchmark rápido (pula carregamento de disco e não salva novas armadilhas)
+./build/kangaroo targets.txt -b 75 --benchmark --no-load
 ```
+
+#### Parâmetros Específicos (Kangaroo)
+- **`--trap-dir <caminho>`**: Local de armazenamento das armadilhas (Default: `traps/`).
+- **`--wild <N>`**: Porcentagem de cangurus selvagens (Default: 50).
+- **`--tame <N>`**: Porcentagem de cangurus domesticados (Default: 50).
+- **`--no-load`**: Pula o carregamento inicial de armadilhas do disco (*Cold Boot*).
 
 ---
 
 ### 3. BSGS Mode (`build/bsgs`)
 Modo Baby-Step Giant-Step com otimização de cache e busca binária.
 ```bash
-./build/bsgs pubkey.txt -b 40 -t 12
+# Busca em range de 40 bits com 12 threads e 4M Baby Steps (4096 * 1024)
+./build/bsgs pubkey.txt -b 40 -t 12 -k 4096
 ```
+
+#### Parâmetros Específicos (BSGS)
+- **`-k <N>`**: Define o tamanho da tabela de *Baby Steps* (N * 1024). Maior valor usa mais RAM mas acelera a busca.
+- **Identidade Forte**: O motor utiliza 256-bit `x` + paridade para eliminar colisões de busca.
 
 ---
 
@@ -118,14 +133,19 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
 - **Aceleração via -k**: Valores maiores de `-k` reduzem a frequência de cálculos pesados de curva elíptica na inicialização de cada chunk, aumentando a taxa líquida de Keys/s.
 - **`-l <tipo>`**: Filtro de compressão de endereço (`compress`, `uncompress`, `both`).
 - **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
-- **`--no-endo`**: Desabilita a otimização de endomorfismo (ativada por padrão). Útil para depuração ou ambientes onde a CPU possui suporte SIMD limitado para aritmética de 256 bits.
-- **Aceleração de Hardware**: Detecta automaticamente suporte a AVX2 e SHA-NI para o pipeline de busca.
+- **`--secp256k1-backend <auto|portable>`**: Seleciona o kernel matemático.
+    - `auto`: Escolhe a versão mais rápida disponível (ex: otimizada para x86_64).
+    - `portable`: Força o uso da implementação C puro (seguro para ambientes instáveis).
+- **`--no-endo`**: Desabilita a otimização de endomorfismo.
+- **Aceleração de Hardware**: Detecta suporte a AVX2 e BMI2. O caminho SHA-NI está desabilitado por segurança até validação completa.
+- **`--list-hardware`**: Exibe as features detectadas da CPU e encerra.
 
 ---
 
-- **Checkpoint v5**: Agora o checkpoint é atômico e salva o contador exato de chunks processados. Suporta `Address`, `BSGS` e `Kangaroo`.
-- **Controle de Caminho (`-c`)**: Use `-c <caminho>` para definir manualmente onde o checkpoint ou as armadilhas (Kangaroo) devem ser salvos.
-- **Resumo Automático**: Ao reiniciar uma busca interrompida, o Bchaves detecta o arquivo de checkpoint e retoma exatamente de onde parou.
+- **Checkpoint v6**: O `address` hybrid persiste chunks; o `address` sequencial agora persiste o proximo `current` de cada thread para retomada exata. `BSGS` continua com checkpoint por giant step global.
+- **Controle de Caminho (`-c`)**: Use `-c <caminho>` para definir manualmente onde o checkpoint sera salvo. Semantica uniforme em todos os motores.
+- **Armadilhas do Kangaroo (`--trap-dir`)**: Use `--trap-dir <diretorio>` para definir onde as armadilhas do `kangaroo` serao persistidas (default: `traps/`).
+- **Resumo Automático**: Ao reiniciar uma busca interrompida, o `address` retoma do ultimo estado valido salvo. `BSGS` retoma do ultimo giant step persistido.
 - **Kangaroo Ultra-Disk**: Busca de armadilhas no disco agora é O(log N), permitindo gerenciar bilhões de armadilhas sem perda de performance.
 - **found.txt**: Descobertas são salvas em log formatado com a Chave Privada em HEX, WIF e Endereço.
 

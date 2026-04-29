@@ -21,7 +21,7 @@ namespace bchaves::system {
 namespace {
 
 constexpr char kMagic[] = {'B', 'C', 'H', 'V'};
-constexpr std::uint32_t kVersion = 5u;
+constexpr std::uint32_t kVersion = 6u;
 
 void append_u32(std::vector<std::uint8_t>& buffer, std::uint32_t value) {
     buffer.push_back(static_cast<std::uint8_t>(value & 0xffu));
@@ -72,6 +72,33 @@ bool read_string(const std::vector<std::uint8_t>& buffer, std::size_t& offset, s
     return true;
 }
 
+void append_worker_currents(std::vector<std::uint8_t>& buffer,
+                            const std::vector<std::array<std::uint8_t, 32>>& worker_currents) {
+    append_u32(buffer, static_cast<std::uint32_t>(worker_currents.size()));
+    for (const auto& current : worker_currents) {
+        buffer.insert(buffer.end(), current.begin(), current.end());
+    }
+}
+
+bool read_worker_currents(const std::vector<std::uint8_t>& buffer,
+                          std::size_t& offset,
+                          std::vector<std::array<std::uint8_t, 32>>& worker_currents) {
+    if (offset + 4 > buffer.size()) {
+        return false;
+    }
+    const std::uint32_t count = read_u32(buffer, offset);
+    const std::size_t bytes = static_cast<std::size_t>(count) * 32u;
+    if (offset + bytes > buffer.size()) {
+        return false;
+    }
+    worker_currents.resize(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::memcpy(worker_currents[i].data(), buffer.data() + offset, worker_currents[i].size());
+        offset += worker_currents[i].size();
+    }
+    return true;
+}
+
 }  // namespace
 
 std::filesystem::path default_checkpoint_path(const std::string& algorithm, const std::optional<std::uint32_t>& bits) {
@@ -101,6 +128,7 @@ bool save_checkpoint(const std::filesystem::path& file, const CheckpointState& s
     append_u64(buffer, state.hybrid_chunk_step);
     append_u64(buffer, state.hybrid_chunk_size);
     append_u64(buffer, state.hybrid_total_chunks);
+    append_worker_currents(buffer, state.worker_currents);
     append_u32(buffer, bchaves::core::crc32(buffer));
 
     std::ofstream out(file, std::ios::binary);
@@ -145,8 +173,8 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
 
     std::size_t offset = 4;
     const std::uint32_t version = read_u32(payload, offset);
-    if (version != kVersion) {
-        error = "versao de checkpoint nao suportada (requer v5)";
+    if (version != 5u && version != 6u) {
+        error = "versao de checkpoint nao suportada (requer v5 ou v6)";
         return false;
     }
     state = {};
@@ -183,6 +211,12 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
         state.hybrid_chunk_step = read_u64(payload, offset);
         state.hybrid_chunk_size = read_u64(payload, offset);
         state.hybrid_total_chunks = read_u64(payload, offset);
+    }
+    if (version >= 6u) {
+        if (!read_worker_currents(payload, offset, state.worker_currents)) {
+            error = "checkpoint truncado ao ler estado dos workers";
+            return false;
+        }
     }
     return true;
 }

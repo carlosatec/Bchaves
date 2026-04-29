@@ -125,6 +125,10 @@ bool parse_address_cli(int argc, char** argv, AddressOptions& options, std::stri
             error = "Use -b <bits> (1-256)";
             return false;
         }
+        if (options.mode == SearchMode::backward || options.mode == SearchMode::both) {
+            error = "Modos backward/both ainda nao estao disponiveis no address. Use sequential ou hybrid.";
+            return false;
+        }
         if (options.mode == SearchMode::hybrid && options.chunk_k == 0) {
             error = "Modo hybrid requer -k <multiplicador> (ex: -k 1024 = 1M chaves/chunk)";
             return false;
@@ -188,6 +192,8 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
                 options.tame_ratio = static_cast<uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
                 if (options.tame_ratio > 100) options.tame_ratio = 100;
                 options.wild_ratio = 100 - options.tame_ratio;
+            } else if (arg == "--trap-dir") {
+                options.trap_dir = require_value(argc, argv, i, arg);
             } else if (!arg.empty() && arg[0] != '-') {
                 options.target_path = arg;
             } else {
@@ -197,6 +203,13 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
         if (!options.help && options.range.empty()) {
             error = "Range invalido (Kangaroo): use -r <start:end>";
             return false;
+        }
+        if (!options.help && options.range.rfind("bits:", 0) == 0) {
+            const std::uint32_t bits = static_cast<std::uint32_t>(std::stoul(options.range.substr(5)));
+            if (bits == 0 || bits > 256) {
+                error = "Bit range invalido (Kangaroo): use valor entre 1 e 256";
+                return false;
+            }
         }
     } catch (const std::exception& ex) {
         error = ex.what();
@@ -208,13 +221,13 @@ bool parse_kangaroo_cli(int argc, char** argv, KangarooOptions& options, std::st
 std::string address_help() {
     return "Uso: ./address <arquivo> -b <bits> [opcoes]\n"
            "  -b <n>         bit range (e.g., 71 for puzzle 71)\n"
-           "  -R <modo>      sequential|backward|both|hybrid\n"
+           "  -R <modo>      sequential|hybrid\n"
            "  -k <n>         chunk multiplier (hybrid): chunk_size = 1024 x n, min 1M\n"
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
            "  --benchmark   sem checkpoint/found.txt\n"
-           "  --secp256k1-backend <b> auto|portable|external\n"
+           "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
            "  --no-checkpoint\n"
            "  --no-endo      desabilita otimizacao endomorfismo\n";
@@ -227,7 +240,7 @@ std::string bsgs_help() {
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
            "  --benchmark    executa sem gravar checkpoint/found.txt\n"
-           "  --secp256k1-backend <b> auto|portable|external\n"
+           "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
            "  --no-checkpoint\n"
            "  --checkpoint-interval <segundos>\n";
@@ -244,8 +257,9 @@ std::string kangaroo_help() {
            "  --no-load      pula o carregamento de armadilhas do disco (para benchmarks rapidos)\n"
            "  --list-hardware exibe informacoes da CPU e encerra\n"
            "  --benchmark    executa sem gravar checkpoint/found.txt\n"
-           "  --secp256k1-backend <b> auto|portable|external\n"
+           "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
+           "  --trap-dir <caminho> diretorio de armadilhas persistidas (default: traps/)\n"
            "  --no-checkpoint\n"
            "  --checkpoint-interval <segundos>\n";
 }
