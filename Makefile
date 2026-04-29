@@ -7,7 +7,7 @@
 # License:    MIT (c) 2026
 
 CXX ?= g++
-CXXFLAGS = -std=c++17 -O2 -Wall -Wextra
+CXXFLAGS = -std=c++17 -O3 -flto -march=native -Wall -Wextra
 ROOT := $(shell pwd)
 BUILD_DIR := $(ROOT)/build
 

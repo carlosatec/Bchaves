@@ -72,6 +72,11 @@ struct Secp256k1BackendInfo {
 };
 
 extern const BigInt kFieldPrime;
+extern const BigInt kCurveOrder;
+extern const BigInt kGLV_Beta;
+extern const BigInt kGLV_Beta2;
+extern const BigInt kGLV_Lambda;
+extern const BigInt kGLV_Lambda2;
 
 bool parse_big_int(const std::string& text, BigInt& out);
 const BigInt& secp256k1_curve_order();
@@ -97,11 +102,14 @@ PointJacobian double_point(const PointJacobian& p);
 PointJacobian add_points(const PointJacobian& p1, const PointJacobian& p2);
 PointJacobian add_points_mixed(const PointJacobian& p1, const Secp256k1Point& p2);
 void batch_normalize(PointJacobian* points, Secp256k1Point* outputs, std::size_t count);
+void batch_mod_inv_k1(BigInt* values, size_t count, BigInt* scratch);
 
 // Aritmética Modular e Utilitários Exportados
 BigInt mod_add(const BigInt& a, const BigInt& b, const BigInt& p);
 BigInt mod_sub(const BigInt& a, const BigInt& b, const BigInt& p);
 BigInt mod_mul(const BigInt& a, const BigInt& b, const BigInt& p);
+BigInt mod_mul_k1(const BigInt& a, const BigInt& b);
+BigInt mod_square_k1(const BigInt& a);
 bool mul_small_in_place(BigInt& value, std::uint32_t multiplier);
 std::array<std::uint8_t, 32> to_bytes32(const BigInt& value);
 std::string to_hex(const std::vector<std::uint8_t>& data);

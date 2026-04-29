@@ -112,6 +112,8 @@ bool parse_address_cli(int argc, char** argv, AddressOptions& options, std::stri
                 options.bits = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
             } else if (arg == "-k") {
                 options.chunk_k = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, i, arg)));
+            } else if (arg == "--no-endo") {
+                options.endomorphism = false;
             } else if (!arg.empty() && arg[0] != '-') {
                 options.target_path = arg;
             } else {
@@ -213,7 +215,8 @@ std::string address_help() {
            "  --benchmark   sem checkpoint/FOUND.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"
-           "  --no-checkpoint\n";
+           "  --no-checkpoint\n"
+           "  --no-endo      desabilita otimizacao endomorfismo\n";
 }
 
 std::string bsgs_help() {

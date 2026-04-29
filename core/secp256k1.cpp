@@ -281,6 +281,86 @@ void reduce_p256_64(std::uint64_t* res, const std::uint64_t* wide) {
     }
 }
 
+BigInt mod_mul_k1(const BigInt& a, const BigInt& b) {
+    uint64_t wide[8]{};
+    
+    // a[0]
+    unsigned __int128 p00 = (unsigned __int128)a.limbs[0] * b.limbs[0]; wide[0] = (uint64_t)p00;
+    unsigned __int128 p01 = (unsigned __int128)a.limbs[0] * b.limbs[1] + (p00 >> 64); wide[1] = (uint64_t)p01;
+    unsigned __int128 p02 = (unsigned __int128)a.limbs[0] * b.limbs[2] + (p01 >> 64); wide[2] = (uint64_t)p02;
+    unsigned __int128 p03 = (unsigned __int128)a.limbs[0] * b.limbs[3] + (p02 >> 64); wide[3] = (uint64_t)p03;
+    wide[4] = (uint64_t)(p03 >> 64);
+
+    // a[1]
+    unsigned __int128 p10 = (unsigned __int128)a.limbs[1] * b.limbs[0] + wide[1]; wide[1] = (uint64_t)p10;
+    unsigned __int128 p11 = (unsigned __int128)a.limbs[1] * b.limbs[1] + wide[2] + (p10 >> 64); wide[2] = (uint64_t)p11;
+    unsigned __int128 p12 = (unsigned __int128)a.limbs[1] * b.limbs[2] + wide[3] + (p11 >> 64); wide[3] = (uint64_t)p12;
+    unsigned __int128 p13 = (unsigned __int128)a.limbs[1] * b.limbs[3] + wide[4] + (p12 >> 64); wide[4] = (uint64_t)p13;
+    wide[5] = (uint64_t)(p13 >> 64);
+
+    // a[2]
+    unsigned __int128 p20 = (unsigned __int128)a.limbs[2] * b.limbs[0] + wide[2]; wide[2] = (uint64_t)p20;
+    unsigned __int128 p21 = (unsigned __int128)a.limbs[2] * b.limbs[1] + wide[3] + (p20 >> 64); wide[3] = (uint64_t)p21;
+    unsigned __int128 p22 = (unsigned __int128)a.limbs[2] * b.limbs[2] + wide[4] + (p21 >> 64); wide[4] = (uint64_t)p22;
+    unsigned __int128 p23 = (unsigned __int128)a.limbs[2] * b.limbs[3] + wide[5] + (p22 >> 64); wide[5] = (uint64_t)p23;
+    wide[6] = (uint64_t)(p23 >> 64);
+
+    // a[3]
+    unsigned __int128 p30 = (unsigned __int128)a.limbs[3] * b.limbs[0] + wide[3]; wide[3] = (uint64_t)p30;
+    unsigned __int128 p31 = (unsigned __int128)a.limbs[3] * b.limbs[1] + wide[4] + (p30 >> 64); wide[4] = (uint64_t)p31;
+    unsigned __int128 p32 = (unsigned __int128)a.limbs[3] * b.limbs[2] + wide[5] + (p31 >> 64); wide[5] = (uint64_t)p32;
+    unsigned __int128 p33 = (unsigned __int128)a.limbs[3] * b.limbs[3] + wide[6] + (p32 >> 64); wide[6] = (uint64_t)p33;
+    wide[7] = (uint64_t)(p33 >> 64);
+
+    BigInt res;
+    reduce_p256_64(res.limbs.data(), wide);
+    for(int j=0; j<2; ++j) {
+        if (res >= kFieldPrime) res -= kFieldPrime;
+    }
+    return res;
+}
+
+BigInt mod_square_k1(const BigInt& a) {
+    uint64_t wide[8]{};
+    unsigned __int128 p, carry;
+    
+    // a[0]*a[1]
+    p = (unsigned __int128)a.limbs[0] * a.limbs[1]; wide[1] = (uint64_t)p; carry = p >> 64;
+    // a[0]*a[2]
+    p = (unsigned __int128)a.limbs[0] * a.limbs[2] + carry; wide[2] = (uint64_t)p; carry = p >> 64;
+    // a[0]*a[3]
+    p = (unsigned __int128)a.limbs[0] * a.limbs[3] + carry; wide[3] = (uint64_t)p; wide[4] = (uint64_t)(p >> 64);
+    
+    // a[1]*a[2]
+    p = (unsigned __int128)a.limbs[1] * a.limbs[2] + wide[3]; wide[3] = (uint64_t)p; carry = p >> 64;
+    // a[1]*a[3]
+    p = (unsigned __int128)a.limbs[1] * a.limbs[3] + wide[4] + carry; wide[4] = (uint64_t)p; wide[5] = (uint64_t)(p >> 64);
+
+    // a[2]*a[3]
+    p = (unsigned __int128)a.limbs[2] * a.limbs[3] + wide[5]; wide[5] = (uint64_t)p; wide[6] = (uint64_t)(p >> 64);
+
+    uint64_t c2 = 0;
+    for(int i=1; i<7; ++i) {
+        uint64_t val = wide[i];
+        wide[i] = (val << 1) | c2;
+        c2 = val >> 63;
+    }
+    wide[7] = c2;
+
+    // Diagonal
+    p = (unsigned __int128)a.limbs[0] * a.limbs[0]; wide[0] = (uint64_t)p; carry = p >> 64;
+    p = (unsigned __int128)a.limbs[1] * a.limbs[1] + wide[2] + carry; wide[2] = (uint64_t)p; carry = p >> 64;
+    p = (unsigned __int128)a.limbs[2] * a.limbs[2] + wide[4] + carry; wide[4] = (uint64_t)p; carry = p >> 64;
+    p = (unsigned __int128)a.limbs[3] * a.limbs[3] + wide[6] + carry; wide[6] = (uint64_t)p; wide[7] += (uint64_t)(p >> 64);
+
+    BigInt res;
+    reduce_p256_64(res.limbs.data(), wide);
+    for(int j=0; j<2; ++j) {
+        if (res >= kFieldPrime) res -= kFieldPrime;
+    }
+    return res;
+}
+
 // Optimized mod_mul
 BigInt mod_mul(const BigInt& a, const BigInt& b, const BigInt& p) {
     uint64_t wide[8]{};
@@ -324,7 +404,9 @@ const BigInt kGeneratorY = parse_hex("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A6
 
 // GLV Constants
 const BigInt kGLV_Beta = parse_hex("7AE96A2B657C07106E64479EAC3434E99CF0497512F58995C1396C28719501EE");
+const BigInt kGLV_Beta2 = parse_hex("851695D49A83F8EF919BB86153CBCB16630FB68AED0A766A3EC693D68E6AFA40");
 const BigInt kGLV_Lambda = parse_hex("5363AD4CC05C30E0A5261C028812645A122E22EA2081667870F197FBF390947");
+const BigInt kGLV_Lambda2 = parse_hex("AC9C52B33FA3CF1F5AD9E3FD77ED9BA4A880B9FC8EC739C2E0CFC810B51283CE");
 
 std::string to_hex(const std::vector<std::uint8_t>& data) {
     static constexpr char kDigits[] = "0123456789abcdef";
@@ -372,59 +454,59 @@ PointJacobian to_jacobian(const BigInt& x, const BigInt& y) {
 Secp256k1Point from_jacobian(const PointJacobian& p) {
     if (p.z.is_zero()) return {0, 0, true};
     BigInt z_inv = mod_inv(p.z, kFieldPrime);
-    BigInt z_inv2 = mod_mul(z_inv, z_inv, kFieldPrime);
-    BigInt z_inv3 = mod_mul(z_inv2, z_inv, kFieldPrime);
-    return {mod_mul(p.x, z_inv2, kFieldPrime), mod_mul(p.y, z_inv3, kFieldPrime), false};
+    BigInt z_inv2 = mod_square_k1(z_inv);
+    BigInt z_inv3 = mod_mul_k1(z_inv2, z_inv);
+    return {mod_mul_k1(p.x, z_inv2), mod_mul_k1(p.y, z_inv3), false};
 }
 
 PointJacobian double_point(const PointJacobian& p) {
     if (p.z.is_zero()) return p;
-    BigInt y2 = mod_mul(p.y, p.y, kFieldPrime);
-    BigInt s = mod_mul(BigInt(4), mod_mul(p.x, y2, kFieldPrime), kFieldPrime);
-    BigInt m = mod_mul(BigInt(3), mod_mul(p.x, p.x, kFieldPrime), kFieldPrime);
-    BigInt x_res = mod_sub(mod_mul(m, m, kFieldPrime), mod_mul(BigInt(2), s, kFieldPrime), kFieldPrime);
-    BigInt y_res = mod_sub(mod_mul(m, mod_sub(s, x_res, kFieldPrime), kFieldPrime), 
-                           mod_mul(BigInt(8), mod_mul(y2, y2, kFieldPrime), kFieldPrime), kFieldPrime);
-    BigInt z_res = mod_mul(BigInt(2), mod_mul(p.y, p.z, kFieldPrime), kFieldPrime);
+    BigInt y2 = mod_square_k1(p.y);
+    BigInt s = mod_mul_k1(BigInt(4), mod_mul_k1(p.x, y2));
+    BigInt m = mod_mul_k1(BigInt(3), mod_square_k1(p.x));
+    BigInt x_res = mod_sub(mod_square_k1(m), mod_mul_k1(BigInt(2), s), kFieldPrime);
+    BigInt y_res = mod_sub(mod_mul_k1(m, mod_sub(s, x_res, kFieldPrime)), 
+                           mod_mul_k1(BigInt(8), mod_square_k1(y2)), kFieldPrime);
+    BigInt z_res = mod_mul_k1(BigInt(2), mod_mul_k1(p.y, p.z));
     return {x_res, y_res, z_res};
 }
 
 PointJacobian add_points(const PointJacobian& p1, const PointJacobian& p2) {
     if (p1.z.is_zero()) return p2;
     if (p2.z.is_zero()) return p1;
-    BigInt z1_2 = mod_mul(p1.z, p1.z, kFieldPrime);
-    BigInt z2_2 = mod_mul(p2.z, p2.z, kFieldPrime);
-    BigInt u1 = mod_mul(p1.x, z2_2, kFieldPrime);
-    BigInt u2 = mod_mul(p2.x, z1_2, kFieldPrime);
-    BigInt s1 = mod_mul(p1.y, mod_mul(p2.z, z2_2, kFieldPrime), kFieldPrime);
-    BigInt s2 = mod_mul(p2.y, mod_mul(p1.z, z1_2, kFieldPrime), kFieldPrime);
+    BigInt z1_2 = mod_square_k1(p1.z);
+    BigInt z2_2 = mod_square_k1(p2.z);
+    BigInt u1 = mod_mul_k1(p1.x, z2_2);
+    BigInt u2 = mod_mul_k1(p2.x, z1_2);
+    BigInt s1 = mod_mul_k1(p1.y, mod_mul_k1(p2.z, z2_2));
+    BigInt s2 = mod_mul_k1(p2.y, mod_mul_k1(p1.z, z1_2));
     if (u1 == u2) return (s1 == s2) ? double_point(p1) : PointJacobian{0, 0, 0};
     BigInt h = mod_sub(u2, u1, kFieldPrime);
     BigInt r = mod_sub(s2, s1, kFieldPrime);
-    BigInt h2 = mod_mul(h, h, kFieldPrime);
-    BigInt h3 = mod_mul(h, h2, kFieldPrime);
-    BigInt v = mod_mul(u1, h2, kFieldPrime);
-    BigInt x_res = mod_sub(mod_sub(mod_mul(r, r, kFieldPrime), h3, kFieldPrime), mod_mul(BigInt(2), v, kFieldPrime), kFieldPrime);
-    BigInt y_res = mod_sub(mod_mul(r, mod_sub(v, x_res, kFieldPrime), kFieldPrime), mod_mul(s1, h3, kFieldPrime), kFieldPrime);
-    BigInt z_res = mod_mul(mod_mul(p1.z, p2.z, kFieldPrime), h, kFieldPrime);
+    BigInt h2 = mod_square_k1(h);
+    BigInt h3 = mod_mul_k1(h, h2);
+    BigInt v = mod_mul_k1(u1, h2);
+    BigInt x_res = mod_sub(mod_sub(mod_square_k1(r), h3, kFieldPrime), mod_mul_k1(BigInt(2), v), kFieldPrime);
+    BigInt y_res = mod_sub(mod_mul_k1(r, mod_sub(v, x_res, kFieldPrime)), mod_mul_k1(s1, h3), kFieldPrime);
+    BigInt z_res = mod_mul_k1(mod_mul_k1(p1.z, p2.z), h);
     return {x_res, y_res, z_res};
 }
 
 PointJacobian add_points_mixed(const PointJacobian& p1, const Secp256k1Point& p2) {
     if (p1.z.is_zero()) return to_jacobian(p2.x, p2.y);
     if (p2.infinity) return p1;
-    BigInt z1_2 = mod_mul(p1.z, p1.z, kFieldPrime);
-    BigInt u2 = mod_mul(p2.x, z1_2, kFieldPrime);
-    BigInt s2 = mod_mul(p2.y, mod_mul(p1.z, z1_2, kFieldPrime), kFieldPrime);
+    BigInt z1_2 = mod_square_k1(p1.z);
+    BigInt u2 = mod_mul_k1(p2.x, z1_2);
+    BigInt s2 = mod_mul_k1(p2.y, mod_mul_k1(p1.z, z1_2));
     if (p1.x == u2) return (p1.y == s2) ? double_point(p1) : PointJacobian{0, 0, 0};
     BigInt h = mod_sub(u2, p1.x, kFieldPrime);
     BigInt r = mod_sub(s2, p1.y, kFieldPrime);
-    BigInt h2 = mod_mul(h, h, kFieldPrime);
-    BigInt h3 = mod_mul(h, h2, kFieldPrime);
-    BigInt v = mod_mul(p1.x, h2, kFieldPrime);
-    BigInt x_res = mod_sub(mod_sub(mod_mul(r, r, kFieldPrime), h3, kFieldPrime), mod_mul(BigInt(2), v, kFieldPrime), kFieldPrime);
-    BigInt y_res = mod_sub(mod_mul(r, mod_sub(v, x_res, kFieldPrime), kFieldPrime), mod_mul(p1.y, h3, kFieldPrime), kFieldPrime);
-    BigInt z_res = mod_mul(p1.z, h, kFieldPrime);
+    BigInt h2 = mod_square_k1(h);
+    BigInt h3 = mod_mul_k1(h, h2);
+    BigInt v = mod_mul_k1(p1.x, h2);
+    BigInt x_res = mod_sub(mod_sub(mod_square_k1(r), h3, kFieldPrime), mod_mul_k1(BigInt(2), v), kFieldPrime);
+    BigInt y_res = mod_sub(mod_mul_k1(r, mod_sub(v, x_res, kFieldPrime)), mod_mul_k1(p1.y, h3), kFieldPrime);
+    BigInt z_res = mod_mul_k1(p1.z, h);
     return {x_res, y_res, z_res};
 }
 
@@ -438,7 +520,7 @@ void batch_normalize(PointJacobian* points, Secp256k1Point* outputs, std::size_t
     for (std::size_t i = 1; i < count; ++i) {
         BigInt z = points[i].z;
         if (z.is_zero()) z = 1;
-        prods[i] = mod_mul(prods[i-1], z, kFieldPrime);
+        prods[i] = mod_mul_k1(prods[i-1], z);
     }
     BigInt inv = mod_inv(prods[count-1], kFieldPrime);
     for (std::size_t i = count - 1; i > 0; --i) {
@@ -447,16 +529,37 @@ void batch_normalize(PointJacobian* points, Secp256k1Point* outputs, std::size_t
             outputs[i] = {0, 0, true};
             continue;
         }
-        BigInt z_inv = mod_mul(inv, prods[i-1], kFieldPrime);
-        inv = mod_mul(inv, z, kFieldPrime);
-        BigInt z_inv2 = mod_mul(z_inv, z_inv, kFieldPrime);
-        BigInt z_inv3 = mod_mul(z_inv2, z_inv, kFieldPrime);
-        outputs[i] = {mod_mul(points[i].x, z_inv2, kFieldPrime), mod_mul(points[i].y, z_inv3, kFieldPrime), false};
+        BigInt z_inv = mod_mul_k1(inv, prods[i-1]);
+        inv = mod_mul_k1(inv, z);
+        BigInt z_inv2 = mod_square_k1(z_inv);
+        BigInt z_inv3 = mod_mul_k1(z_inv2, z_inv);
+        outputs[i] = {mod_mul_k1(points[i].x, z_inv2), mod_mul_k1(points[i].y, z_inv3), false};
     }
     BigInt z_inv = inv;
-    BigInt z_inv2 = mod_mul(z_inv, z_inv, kFieldPrime);
-    BigInt z_inv3 = mod_mul(z_inv2, z_inv, kFieldPrime);
-    outputs[0] = {mod_mul(points[0].x, z_inv2, kFieldPrime), mod_mul(points[0].y, z_inv3, kFieldPrime), points[0].z.is_zero()};
+    BigInt z_inv2 = mod_square_k1(z_inv);
+    BigInt z_inv3 = mod_mul_k1(z_inv2, z_inv);
+    outputs[0] = {mod_mul_k1(points[0].x, z_inv2), mod_mul_k1(points[0].y, z_inv3), points[0].z.is_zero()};
+}
+
+void batch_mod_inv_k1(BigInt* values, size_t count, BigInt* scratch) {
+    if (count == 0) return;
+    scratch[0] = values[0];
+    if (scratch[0].is_zero()) scratch[0] = 1;
+    for (size_t i = 1; i < count; ++i) {
+        BigInt v = values[i];
+        if (v.is_zero()) v = 1;
+        scratch[i] = mod_mul_k1(scratch[i-1], v);
+    }
+    BigInt inv = mod_inv(scratch[count-1], kFieldPrime);
+    for (size_t i = count - 1; i > 0; --i) {
+        BigInt v = values[i];
+        if (v.is_zero()) continue;
+        values[i] = mod_mul_k1(inv, scratch[i-1]);
+        inv = mod_mul_k1(inv, v);
+    }
+    if (!values[0].is_zero()) {
+        values[0] = inv;
+    }
 }
 
 Secp256k1Point secp256k1_add(const Secp256k1Point& a, const Secp256k1Point& b) {

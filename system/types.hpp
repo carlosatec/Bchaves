@@ -115,6 +115,7 @@ struct AddressOptions : CommonOptions {
     std::uint64_t limit = 0;
     std::uint32_t bits = 0;
     std::uint32_t chunk_k = 0;   // -k: chunk_size = 1024 * chunk_k (min 1M)
+    bool endomorphism = true;
 };
 
 struct BsgsOptions : CommonOptions {

@@ -122,7 +122,7 @@ bool resolve_range(const bchaves::system::AddressOptions& options,
 }
 
 void run_hybrid_worker(
-    std::uint32_t              tid,
+    std::uint32_t              /*tid*/,
     const bchaves::core::BigInt& range_start,
     const AddressMatcher&        matcher,
     const bchaves::system::AddressOptions& options,
@@ -139,53 +139,114 @@ void run_hybrid_worker(
     const bchaves::core::BigInt big_chunk(g_hybrid_chunk_size);
     const bchaves::core::BigInt batch_step(kBatch);
 
-    bchaves::core::PointJacobian batch_p[kBatch];
-    bchaves::core::Secp256k1Point batch_affine[kBatch];
-    bchaves::core::BigInt batch_keys[kBatch];
+    static bchaves::core::Secp256k1Point Gn[512];
+    static bchaves::core::Secp256k1Point _2Gn;
+    static std::once_flag init_gn;
+    std::call_once(init_gn, [&](){
+        bchaves::core::PointJacobian j = bchaves::core::to_jacobian(G.x, G.y);
+        bchaves::core::PointJacobian g_batch[512];
+        for(int i=0; i<512; ++i) {
+            g_batch[i] = j;
+            j = bchaves::core::add_points_mixed(j, G);
+        }
+        bchaves::core::batch_normalize(g_batch, Gn, 512);
+        
+        bchaves::core::PointJacobian j1024 = bchaves::core::to_jacobian(bG.x, bG.y);
+        bchaves::core::batch_normalize(&j1024, &_2Gn, 1);
+    });
+
+        bool do_compress = options.type == bchaves::system::SearchType::compress || options.type == bchaves::system::SearchType::both;
+        bool do_uncompress = options.type == bchaves::system::SearchType::uncompress || options.type == bchaves::system::SearchType::both;
+        const bool calculate_y = true; // MUST always be true to correctly evaluate parity in endomorphism reconstuction
+
+    bchaves::core::Secp256k1Point batch_affine[8];
+    uint32_t batch_offsets[8];
+    int batch_count = 0;
+
+    std::uint8_t batch_sha_out[8][32];
+    std::uint8_t batch_ripemd_out[8][20];
+    std::uint8_t* sha_ptr[8];
+    const std::uint8_t* sha_in_ptr[8];
+    std::uint8_t* ripemd_ptr[8];
+    const std::uint8_t* data_ptr[8];
+    alignas(32) std::uint8_t pub_bufs[8][65];
 
     while (!interrupt && !found.load(std::memory_order_relaxed)) {
         const uint64_t my_idx = g_chunk_counter.fetch_add(1, std::memory_order_relaxed);
         if (my_idx >= g_hybrid_total_chunks) break;
-        const uint64_t chunk_id = (my_idx * g_chunk_step) % g_hybrid_total_chunks;
+        
+        uint64_t sm_x = my_idx * g_chunk_step;
+        sm_x ^= sm_x >> 33; sm_x *= 0xff51afd7ed558ccdULL;
+        sm_x ^= sm_x >> 33; sm_x *= 0xc4ceb9fe1a85ec53ULL;
+        sm_x ^= sm_x >> 33;
+        const uint64_t chunk_id = sm_x % g_hybrid_total_chunks;
 
         bchaves::core::BigInt cur_key = range_start;
         cur_key += bchaves::core::BigInt(chunk_id) * big_chunk;
 
-        const auto base_pt = bchaves::core::secp256k1_multiply(cur_key);
-        bchaves::core::PointJacobian p_jac = bchaves::core::to_jacobian(base_pt.x, base_pt.y);
+        bchaves::core::BigInt center_key = cur_key + bchaves::core::BigInt(512);
+        bchaves::core::Secp256k1Point startP = bchaves::core::secp256k1_multiply(center_key);
+
+        bchaves::core::BigInt dx[513];
+        bchaves::core::BigInt dx_inv[513];
 
         for (uint64_t done = 0;
              done < g_hybrid_chunk_size && !interrupt && !found.load(std::memory_order_relaxed);
              done += kBatch)
         {
-            bchaves::core::PointJacobian tmp_jac = p_jac;
-            bchaves::core::BigInt tmp_key = cur_key;
-            for (size_t k = 0; k < kBatch; ++k) {
-                batch_p[k]    = tmp_jac;
-                batch_keys[k] = tmp_key;
-                tmp_jac = bchaves::core::add_points_mixed(tmp_jac, G);
-                ++tmp_key;
+            for(int i=0; i<512; ++i) {
+                dx[i] = bchaves::core::mod_sub(Gn[i].x, startP.x, bchaves::core::kFieldPrime);
             }
+            dx[512] = bchaves::core::mod_sub(_2Gn.x, startP.x, bchaves::core::kFieldPrime);
+            
+            bchaves::core::batch_mod_inv_k1(dx, 513, dx_inv);
 
-            bchaves::core::batch_normalize(batch_p, batch_affine, kBatch);
+            auto check_batch_fn = [&](const bchaves::core::Secp256k1Point* pts, int endo_variant) {
+                // Lambda factors for reconstruction
+                bchaves::core::BigInt lambda_factor;
+                if (endo_variant == 0) lambda_factor = 1;
+                else if (endo_variant == 1) lambda_factor = bchaves::core::kGLV_Lambda;
+                else if (endo_variant == 2) lambda_factor = bchaves::core::kGLV_Lambda2;
 
-            std::uint8_t batch_sha_out[8][32];
-            std::uint8_t batch_ripemd_out[8][20];
-            std::uint8_t* sha_ptr[8];
-            const std::uint8_t* sha_in_ptr[8];
-            std::uint8_t* ripemd_ptr[8];
-            const std::uint8_t* data_ptr[8];
-            alignas(32) std::uint8_t pub_bufs[8][65];
-
-            for (size_t k = 0; k < kBatch; k += 8) {
-                auto check_batch = [&](bool compress) {
-                    size_t p_len = compress ? 33 : 65;
+                auto hash_and_check = [&](bool is_compress, int parity_override) {
+                    size_t p_len = is_compress ? 33 : 65;
                     for(int u=0; u<8; ++u) {
-                        bchaves::core::serialize_pubkey(batch_affine[k+u], compress, pub_bufs[u]);
                         data_ptr[u] = pub_bufs[u];
                         sha_ptr[u] = batch_sha_out[u];
                         sha_in_ptr[u] = batch_sha_out[u];
                         ripemd_ptr[u] = batch_ripemd_out[u];
+
+                        if (is_compress) {
+                            pub_bufs[u][0] = parity_override;
+                            uint64_t swapped[4] = {
+                                __builtin_bswap64(pts[u].x.limbs[3]),
+                                __builtin_bswap64(pts[u].x.limbs[2]),
+                                __builtin_bswap64(pts[u].x.limbs[1]),
+                                __builtin_bswap64(pts[u].x.limbs[0])
+                            };
+                            std::memcpy(pub_bufs[u] + 1, swapped, 32);
+                        } else {
+                            pub_bufs[u][0] = 0x04;
+                            uint64_t swapped_x[4] = {
+                                __builtin_bswap64(pts[u].x.limbs[3]),
+                                __builtin_bswap64(pts[u].x.limbs[2]),
+                                __builtin_bswap64(pts[u].x.limbs[1]),
+                                __builtin_bswap64(pts[u].x.limbs[0])
+                            };
+                            std::memcpy(pub_bufs[u] + 1, swapped_x, 32);
+                            
+                            bchaves::core::BigInt y_val = pts[u].y;
+                            if (parity_override == 3) {
+                                y_val = bchaves::core::mod_sub(bchaves::core::kFieldPrime, y_val, bchaves::core::kFieldPrime);
+                            }
+                            uint64_t swapped_y[4] = {
+                                __builtin_bswap64(y_val.limbs[3]),
+                                __builtin_bswap64(y_val.limbs[2]),
+                                __builtin_bswap64(y_val.limbs[1]),
+                                __builtin_bswap64(y_val.limbs[0])
+                            };
+                            std::memcpy(pub_bufs[u] + 33, swapped_y, 32);
+                        }
                     }
                     
                     bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr); 
@@ -200,11 +261,37 @@ void run_hybrid_worker(
                             if (std::memcmp(batch_ripemd_out[u], target.data(), 20) == 0) {
                                 std::lock_guard<std::mutex> lock(found_mutex);
                                 if (!found.load()) {
-                                    bchaves::core::derive_key_info(batch_keys[k+u], found_key);
+                                    bchaves::core::BigInt match_key = cur_key + bchaves::core::BigInt(batch_offsets[u]);
+                                    
+                                    if (endo_variant != 0) {
+                                        match_key = bchaves::core::mod_mul(match_key, lambda_factor, bchaves::core::kCurveOrder);
+                                    }
+                                    
+                                    if (endo_variant == 0) {
+                                        // Para o base, o pts[u].y gerado inicialmente dita qual a paridade verdadeira para `match_key`
+                                        // Se estamos checando uma paridade *diferente* do pts[u].y, então é -k
+                                        bool real_is_odd = pts[u].y.is_odd();
+                                        bool checked_is_odd = (parity_override == 0x03 || parity_override == 3);
+                                        if (real_is_odd != checked_is_odd) {
+                                            match_key = bchaves::core::kCurveOrder - match_key;
+                                        }
+                                    } else {
+                                        // Para endo, a gente tem um Y que também pode ser diferente.
+                                        // Em teoria, temos que gerar o Y verdadeiro do endo para saber se é k ou -k.
+                                        // A forma mais segura é gerar o ponto público de match_key e comparar!
+                                        bchaves::core::Secp256k1Point pub = bchaves::core::secp256k1_multiply(match_key);
+                                        bool match_is_odd = pub.y.is_odd();
+                                        bool target_is_odd = (parity_override == 0x03 || parity_override == 3);
+                                        if (match_is_odd != target_is_odd) {
+                                            match_key = bchaves::core::kCurveOrder - match_key;
+                                        }
+                                    }
+
+                                    bchaves::core::derive_key_info(match_key, found_key);
                                     found = true;
                                     if (!options.benchmark) {
                                         std::ofstream f("FOUND.txt", std::ios::app);
-                                        f << "Private Key: " << bchaves::core::bigint_to_hex(batch_keys[k+u]) << "\n";
+                                        f << "Private Key: " << bchaves::core::bigint_to_hex(match_key) << "\n";
                                     }
                                 }
                             }
@@ -212,20 +299,107 @@ void run_hybrid_worker(
                     }
                 };
 
-                if (options.type == bchaves::system::SearchType::compress || options.type == bchaves::system::SearchType::both) {
-                    check_batch(true);
+                if (do_compress) {
+                    hash_and_check(true, 0x02);
+                    hash_and_check(true, 0x03);
                 }
-                if (options.type == bchaves::system::SearchType::uncompress || options.type == bchaves::system::SearchType::both) {
-                    check_batch(false);
+                if (do_uncompress) {
+                    hash_and_check(false, 2); // 2 means original Y
+                    hash_and_check(false, 3); // 3 means -Y
                 }
+            };
 
-                if (found.load(std::memory_order_relaxed)) break;
+            auto process_batch = [&]() {
+                check_batch_fn(batch_affine, 0);
+
+                if (options.endomorphism) {
+                    bchaves::core::Secp256k1Point endo1[8];
+                    bchaves::core::Secp256k1Point endo2[8];
+                    for(int u=0; u<8; ++u) {
+                        endo1[u].x = bchaves::core::mod_mul_k1(batch_affine[u].x, bchaves::core::kGLV_Beta);
+                        endo1[u].y = batch_affine[u].y; // y is not actually used correctly for endo, but parity check fixes it
+                        
+                        endo2[u].x = bchaves::core::mod_mul_k1(batch_affine[u].x, bchaves::core::kGLV_Beta2);
+                        endo2[u].y = batch_affine[u].y;
+                    }
+                    check_batch_fn(endo1, 1);
+                    check_batch_fn(endo2, 2);
+                }
+            };
+
+            auto push_point = [&](const bchaves::core::BigInt& px, const bchaves::core::BigInt& py, uint32_t offset) {
+                batch_affine[batch_count].x = px;
+                batch_affine[batch_count].y = py;
+                batch_affine[batch_count].infinity = false;
+                batch_offsets[batch_count] = offset;
+                batch_count++;
+                if (batch_count == 8) {
+                    process_batch();
+                    batch_count = 0;
+                }
+            };
+            
+            push_point(startP.x, startP.y, 512);
+
+            for(int i=0; i<511; ++i) {
+                bchaves::core::BigInt dy, _s, _p, dyn;
+                
+                // pp = startP + Gn[i]
+                dy = bchaves::core::mod_sub(Gn[i].y, startP.y, bchaves::core::kFieldPrime);
+                _s = bchaves::core::mod_mul_k1(dy, dx[i]);
+                _p = bchaves::core::mod_square_k1(_s);
+                bchaves::core::BigInt pp_x = bchaves::core::mod_sub(bchaves::core::mod_sub(_p, startP.x, bchaves::core::kFieldPrime), Gn[i].x, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt pp_y;
+                if (calculate_y) {
+                    pp_y = bchaves::core::mod_sub(bchaves::core::mod_mul_k1(bchaves::core::mod_sub(Gn[i].x, pp_x, bchaves::core::kFieldPrime), _s), Gn[i].y, bchaves::core::kFieldPrime);
+                }
+                push_point(pp_x, pp_y, 512 + i + 1);
+
+                // pn = startP - Gn[i]
+                dyn = bchaves::core::mod_sub(bchaves::core::kFieldPrime, Gn[i].y, bchaves::core::kFieldPrime);
+                dyn = bchaves::core::mod_sub(dyn, startP.y, bchaves::core::kFieldPrime);
+                _s = bchaves::core::mod_mul_k1(dyn, dx[i]);
+                _p = bchaves::core::mod_square_k1(_s);
+                bchaves::core::BigInt pn_x = bchaves::core::mod_sub(bchaves::core::mod_sub(_p, startP.x, bchaves::core::kFieldPrime), Gn[i].x, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt pn_y;
+                if (calculate_y) {
+                    pn_y = bchaves::core::mod_add(bchaves::core::mod_mul_k1(bchaves::core::mod_sub(Gn[i].x, pn_x, bchaves::core::kFieldPrime), _s), Gn[i].y, bchaves::core::kFieldPrime);
+                }
+                push_point(pn_x, pn_y, 512 - i - 1);
             }
 
-            p_jac = bchaves::core::add_points_mixed(p_jac, bG);
+            {
+                int i = 511;
+                bchaves::core::BigInt dyn = bchaves::core::mod_sub(bchaves::core::kFieldPrime, Gn[i].y, bchaves::core::kFieldPrime);
+                dyn = bchaves::core::mod_sub(dyn, startP.y, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt _s = bchaves::core::mod_mul_k1(dyn, dx[i]);
+                bchaves::core::BigInt _p = bchaves::core::mod_square_k1(_s);
+                bchaves::core::BigInt pn_x = bchaves::core::mod_sub(bchaves::core::mod_sub(_p, startP.x, bchaves::core::kFieldPrime), Gn[i].x, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt pn_y;
+                if (calculate_y) {
+                    pn_y = bchaves::core::mod_add(bchaves::core::mod_mul_k1(bchaves::core::mod_sub(Gn[i].x, pn_x, bchaves::core::kFieldPrime), _s), Gn[i].y, bchaves::core::kFieldPrime);
+                }
+                push_point(pn_x, pn_y, 0);
+            }
+
+            if (found.load(std::memory_order_relaxed) || interrupt) break;
+
+            {
+                bchaves::core::BigInt dy = bchaves::core::mod_sub(_2Gn.y, startP.y, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt _s = bchaves::core::mod_mul_k1(dy, dx[512]);
+                bchaves::core::BigInt _p = bchaves::core::mod_square_k1(_s);
+                bchaves::core::BigInt next_x = bchaves::core::mod_sub(bchaves::core::mod_sub(_p, startP.x, bchaves::core::kFieldPrime), _2Gn.x, bchaves::core::kFieldPrime);
+                bchaves::core::BigInt next_y = bchaves::core::mod_sub(bchaves::core::mod_mul_k1(bchaves::core::mod_sub(_2Gn.x, next_x, bchaves::core::kFieldPrime), _s), _2Gn.y, bchaves::core::kFieldPrime);
+                startP.x = next_x;
+                startP.y = next_y;
+            }
+
             cur_key += batch_step;
-            total_processed.fetch_add(kBatch, std::memory_order_relaxed);
-            if (interrupt) return;
+            
+            uint64_t mult = 2;
+            if (options.type == bchaves::system::SearchType::both) mult = 4;
+            if (options.endomorphism) mult *= 3;
+            total_processed.fetch_add(kBatch * mult, std::memory_order_relaxed);
         }
     }
 }
