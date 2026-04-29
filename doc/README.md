@@ -8,7 +8,7 @@ Bem-vindo à documentação técnica do **Bchaves**. Este diretório contém det
     *   Explicação das camadas de código (`core`, `engine`, `modulos`).
     *   Fluxo de dependências.
 2.  **[Algoritmos e Pesquisa](algorithms.md)**
-    *   **NOVO: Hybrid Chunk Search (LCG Bijection).**
+    *   **NOVO: Hybrid-Endo Fusion (GLV + LCG).**
     *   BSGS com Cuckoo Filters e Flat Memory.
     *   Pollard's Kangaroo e Architectural Fleet Model.
     *   Otimizações (GLV, Batch Normalization).

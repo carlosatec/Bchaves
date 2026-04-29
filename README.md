@@ -5,12 +5,12 @@ O **Bchaves** é uma ferramenta de busca de chaves privadas Bitcoin de ultra-alt
 ---
 
 ## 🚀 Novidades: Ultra Performance Update
-- **Motor SIMD AVX2 Nativo**: Processamento real de 8 hashes SHA-256 e RIPEMD-160 em paralelo por ciclo de clock.
-- **Suporte Multi-Formato Full**: Busca simultânea de endereços `compress`, `uncompress` e `both` sem perda de performance ou risco de falsos-negativos.
-- **Filtro Cuckoo Integrado**: Busca probabilística de alvos em tempo constante O(1), eliminando gargalos de I/O.
-- **Zero-Copy Pipeline**: Arquitetura de dados otimizada que reduz latência de cache e evita cópias desnecessárias na RAM.
-- **Motor Hybrid Chunk**: Busca pseudoaleatória com cobertura de 100% via bijeção LCG.
-- **Checkpoint v5**: Estado de persistência robusto e resumível sem perdas.
+- **Motor Hybrid-Endo Fusion**: Integração nativa de endomorfismo GLV, triplicando o throughput real ao processar 3 chaves relacionadas por operação.
+- **Aritmética de Campo Otimizada**: Kernels de multiplicação e quadrado (`mod_mul_k1`, `mod_square_k1`) otimizados para o primo da Secp256k1.
+- **Motor SIMD AVX2 Nativo**: Processamento de 8 hashes SHA-256 e RIPEMD-160 em paralelo por ciclo, agora integrado ao pipeline de endomorfismo.
+- **Blindagem de Checkpoint v5**: Validação rigorosa de parâmetros (`-k`, `-R`) para evitar corrupção de progresso e garantir retomada atômica.
+- **Suporte Multi-Formato Full**: Busca simultânea de endereços `compress`, `uncompress` e `both` com pipeline de paridade corrigida.
+- **Filtro Cuckoo Integrado**: Busca probabilística de alvos em O(1), eliminando gargalos de comparação de memória.
 
 ---
 
@@ -117,6 +117,7 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
 - **Aceleração via -k**: Valores maiores de `-k` reduzem a frequência de cálculos pesados de curva elíptica na inicialização de cada chunk, aumentando a taxa líquida de Keys/s.
 - **`-l <tipo>`**: Filtro de compressão de endereço (`compress`, `uncompress`, `both`).
 - **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
+- **`--no-endo`**: Desabilita a otimização de endomorfismo (ativada por padrão). Útil para depuração ou ambientes onde a CPU possui suporte SIMD limitado para aritmética de 256 bits.
 - **Aceleração de Hardware**: Detecta automaticamente suporte a AVX2 e SHA-NI para o pipeline de busca.
 
 ---

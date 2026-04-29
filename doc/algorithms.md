@@ -36,11 +36,12 @@ O Bchaves utiliza um modelo de "frota" onde cada thread gerencia 64 "cangurus" s
 - **Distinguished Points:** O sistema usa pontos distintos para identificar colisões entre cangurus selvagens e domesticados.
 - **Disk Dumping (NVMe):** Quando a RAM atinge 80% de uso, o sistema despeja as "armadilhas" (traps) no diretório `traps/`. Isso permite que a busca continue por dias ou meses sem estourar a memória.
 
-## 3. Otimização GLV (Endomorfismo)
-Implementada no `core/secp256k1.cpp`.
-- **O que faz:** Aproveita um automorfismo eficiente na curva secp256k1 para decompor uma multiplicação escalar $k \cdot G$ em duas multiplicações menores.
-- **Resultado:** Reduz o número de duplicas e adições de pontos pela metade (Aprox. 50%).
-- **Impacto:** Aumento de ~40% no throughput real (MH/s).
+## 3. Otimização GLV (Endo Fusion)
+Implementada no `core/secp256k1.cpp` e fundida no motor `address.cpp`.
+- **O que faz:** Aproveita o automorfismo elíptico para calcular pontos relacionados $P_1 = \beta X$, $P_2 = \beta^2 X$.
+- **Endo Fusion:** No motor `address`, para cada ponto elíptico calculado, o sistema verifica automaticamente as chaves $k$, $\lambda k$ e $\lambda^2 k$.
+- **Resultado:** O throughput é efetivamente **triplicado** (3 chaves verificadas por "preço" de uma), pois os pontos $P_1$ e $P_2$ são obtidos via multiplicações modulares de campo, muito mais baratas que somas de curvas elípticas.
+- **Impacto:** Aumento massivo de MH/s sem aumento proporcional no consumo de energia.
 
 ## 4. Coordenadas Jacobianas e Batch Normalization
 Todas as operações de ponto (`secp256k1_add`, `secp256k1_double`) são realizadas em coordenadas Jacobianas $(X, Y, Z)$.

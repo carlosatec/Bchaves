@@ -6,14 +6,14 @@ Este guia explica como operar o **Bchaves** de forma eficiente em buscas de long
 
 O sistema salva o progresso automaticamente de forma segura em arquivos binários **Versão 5**.
 - **Formato:** O `.ckp` v5 agora armazena o estado exato dos chunks (`counter`, `step`, `size`), permitindo retomada determinística em buscas pseudoaleatórias.
-- **Incompatibilidade**: Checkpoints v3/v4 não são mais compatíveis. É necessário iniciar novas buscas ou deletar arquivos antigos se houver erro de versão.
-- **Frequência:** Geralmente a cada 10-60 segundos (configurável via CLI).
+- **Segurança de Parâmetros**: O motor valida se o multiplicador `-k` e o Modo de Busca `-R` são idênticos aos do checkpoint. Se houver divergência, o programa aborta para proteger seu progresso.
 - **Salvamento de Emergência:** Ao capturar `Ctrl+C`, o motor gera um checkpoint instantâneo compensando as threads em processamento.
 
 A busca identifica P2PKH, P2SH e Bech32. Além disso, o motor oferece quatro estratégias de exploração:
 
 1.  **`-R hybrid`**: **(Recomendado)** Usa bijeção LCG para varrer o range de forma desordenada mas completa (100% de cobertura).
-    -   **Uso de `-k`**: Controla o tamanho do "chunk". Ex: `-k 4096` cria blocos de 4 milhões de chaves, o que é ideal para minimizar o custo fixo de multiplicação ECC na GPU/CPU.
+    -   **Uso de `-k`**: Controla o tamanho do "chunk". Ex: `-k 4096` cria blocos de 4 milhões de chaves.
+    -   **Otimização Endo**: Ativa automaticamente a fusão de endomorfismo para triplicar o MH/s. Use `--no-endo` para desativar.
 2.  **`-R sequential/backward`**: Busca linear para ranges muito curtos onde o overhead do LCG não se justifica.
 3.  **Filtragem de Alvos (`-l`)**: `compress`, `uncompress` ou `both`.
 
