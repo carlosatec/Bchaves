@@ -42,8 +42,8 @@ void handle_signal(int) {
 }
 
 // ===== HYBRID: divisão BigInt exata =====
-static uint64_t bigint_div_u64(const bchaves::core::BigInt& num, uint64_t denom) {
-    if (denom == 0) return 0;
+static bool bigint_div_u64_checked(const bchaves::core::BigInt& num, uint64_t denom, uint64_t& out) {
+    if (denom == 0) return false;
     __uint128_t rem = 0;
     uint64_t result[4] = {};
     for (int i = 3; i >= 0; --i) {
@@ -51,7 +51,9 @@ static uint64_t bigint_div_u64(const bchaves::core::BigInt& num, uint64_t denom)
         result[i] = static_cast<uint64_t>(cur / denom);
         rem = cur % denom;
     }
-    return result[0];
+    if (result[1] != 0 || result[2] != 0 || result[3] != 0) return false;
+    out = result[0];
+    return true;
 }
 
 // ===== HYBRID: LCG bijetor =====
@@ -159,9 +161,11 @@ bool resolve_range(const bchaves::system::AddressOptions& options,
 void run_hybrid_worker(
     std::uint32_t              /*tid*/,
     const bchaves::core::BigInt& range_start,
+    const bchaves::core::BigInt& range_end,
     const AddressMatcher&        matcher,
     const bchaves::system::AddressOptions& options,
-    std::atomic<uint64_t>&       total_processed,
+    std::atomic<uint64_t>&       total_keys_processed,
+    std::atomic<uint64_t>&       total_checks_processed,
     bchaves::core::DerivedKeyInfo& found_key,
     std::atomic<bool>&           found,
     std::mutex&                  found_mutex,
@@ -216,6 +220,17 @@ void run_hybrid_worker(
 
         bchaves::core::BigInt cur_key = range_start;
         cur_key += bchaves::core::BigInt(chunk_id) * big_chunk;
+        uint64_t chunk_key_count = g_hybrid_chunk_size;
+        if (chunk_id + 1 == g_hybrid_total_chunks) {
+            bchaves::core::BigInt remaining = range_end - cur_key;
+            ++remaining;
+            std::uint64_t remaining_u64 = 0;
+            if (!bchaves::core::bigint_to_u64(remaining, remaining_u64)) {
+                remaining_u64 = g_hybrid_chunk_size;
+            }
+            chunk_key_count = std::min(chunk_key_count, remaining_u64);
+        }
+        if (chunk_key_count == 0) continue;
 
         bchaves::core::BigInt center_key = cur_key + bchaves::core::BigInt(512);
         bchaves::core::Secp256k1Point startP = bchaves::core::secp256k1_multiply(center_key);
@@ -224,9 +239,12 @@ void run_hybrid_worker(
         bchaves::core::BigInt dx_inv[513];
 
         for (uint64_t done = 0;
-             done < g_hybrid_chunk_size && !interrupt && !found.load(std::memory_order_relaxed);
+             done < chunk_key_count && !interrupt && !found.load(std::memory_order_relaxed);
              done += kBatch)
         {
+            const uint32_t valid_offsets_limit =
+                static_cast<uint32_t>(std::min<uint64_t>(kBatch, chunk_key_count - done));
+
             for(int i=0; i<512; ++i) {
                 dx[i] = bchaves::core::mod_sub(Gn[i].x, startP.x, bchaves::core::kFieldPrime);
             }
@@ -234,7 +252,7 @@ void run_hybrid_worker(
             
             bchaves::core::batch_mod_inv_k1(dx, 513, dx_inv);
 
-            auto check_batch_fn = [&](const bchaves::core::Secp256k1Point* pts, int endo_variant) {
+            auto check_batch_fn = [&](const bchaves::core::Secp256k1Point* pts, int lane_count, int endo_variant) {
                 // Lambda factors for reconstruction
                 bchaves::core::BigInt lambda_factor;
                 if (endo_variant == 0) lambda_factor = 1;
@@ -243,7 +261,7 @@ void run_hybrid_worker(
 
                 auto hash_and_check = [&](bool is_compress, int parity_override) {
                     size_t p_len = is_compress ? 33 : 65;
-                    for(int u=0; u<8; ++u) {
+                    for(int u=0; u<lane_count; ++u) {
                         data_ptr[u] = pub_bufs[u];
                         sha_ptr[u] = batch_sha_out[u];
                         sha_in_ptr[u] = batch_sha_out[u];
@@ -282,10 +300,19 @@ void run_hybrid_worker(
                         }
                     }
                     
-                    bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr); 
-                    bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
+                    if (lane_count == 8) {
+                        bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr);
+                        bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
+                    } else {
+                        for (int u = 0; u < lane_count; ++u) {
+                            const auto sha = bchaves::core::sha256(pub_bufs[u], p_len);
+                            std::memcpy(batch_sha_out[u], sha.data(), sha.size());
+                            const auto ripemd = bchaves::core::ripemd160(batch_sha_out[u], 32);
+                            std::memcpy(batch_ripemd_out[u], ripemd.data(), ripemd.size());
+                        }
+                    }
 
-                    for(int u=0; u<8; ++u) {
+                    for(int u=0; u<lane_count; ++u) {
                         uint64_t filter_hash;
                         std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
                         if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
@@ -295,9 +322,6 @@ void run_hybrid_worker(
 
                         if (std::binary_search(matcher.hashes.begin(), matcher.hashes.end(), current_hash)) {
                             // Encontrou algum alvo.
-                            auto it = std::lower_bound(matcher.hashes.begin(), matcher.hashes.end(), current_hash);
-                            const auto& target = *it;
-                            
                             std::lock_guard<std::mutex> lock(found_mutex);
                                 if (!found.load()) {
                                     bchaves::core::BigInt match_key = cur_key + bchaves::core::BigInt(batch_offsets[u]);
@@ -343,32 +367,35 @@ void run_hybrid_worker(
                 }
             };
 
-            auto process_batch = [&]() {
-                check_batch_fn(batch_affine, 0);
+            auto process_batch = [&](int lane_count) {
+                if (lane_count <= 0) return;
+
+                check_batch_fn(batch_affine, lane_count, 0);
 
                 if (options.endomorphism) {
                     bchaves::core::Secp256k1Point endo1[8];
                     bchaves::core::Secp256k1Point endo2[8];
-                    for(int u=0; u<8; ++u) {
+                    for(int u=0; u<lane_count; ++u) {
                         endo1[u].x = bchaves::core::mod_mul_k1(batch_affine[u].x, bchaves::core::kGLV_Beta);
                         endo1[u].y = batch_affine[u].y; // y is not actually used correctly for endo, but parity check fixes it
                         
                         endo2[u].x = bchaves::core::mod_mul_k1(batch_affine[u].x, bchaves::core::kGLV_Beta2);
                         endo2[u].y = batch_affine[u].y;
                     }
-                    check_batch_fn(endo1, 1);
-                    check_batch_fn(endo2, 2);
+                    check_batch_fn(endo1, lane_count, 1);
+                    check_batch_fn(endo2, lane_count, 2);
                 }
             };
 
             auto push_point = [&](const bchaves::core::BigInt& px, const bchaves::core::BigInt& py, uint32_t offset) {
+                if (offset >= valid_offsets_limit) return;
                 batch_affine[batch_count].x = px;
                 batch_affine[batch_count].y = py;
                 batch_affine[batch_count].infinity = false;
                 batch_offsets[batch_count] = offset;
                 batch_count++;
                 if (batch_count == 8) {
-                    process_batch();
+                    process_batch(batch_count);
                     batch_count = 0;
                 }
             };
@@ -416,6 +443,11 @@ void run_hybrid_worker(
                 push_point(pn_x, pn_y, 0);
             }
 
+            if (batch_count > 0) {
+                process_batch(batch_count);
+                batch_count = 0;
+            }
+
             if (found.load(std::memory_order_relaxed) || interrupt) break;
 
             {
@@ -433,7 +465,8 @@ void run_hybrid_worker(
             uint64_t mult = 2;
             if (options.type == bchaves::system::SearchType::both) mult = 4;
             if (options.endomorphism) mult *= 3;
-            total_processed.fetch_add(kBatch * mult, std::memory_order_relaxed);
+            total_keys_processed.fetch_add(valid_offsets_limit, std::memory_order_relaxed);
+            total_checks_processed.fetch_add(static_cast<uint64_t>(valid_offsets_limit) * mult, std::memory_order_relaxed);
         }
     }
 }
@@ -474,6 +507,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
 
     auto started = std::chrono::steady_clock::now();
     std::atomic<uint64_t> total_processed{0};
+    std::atomic<uint64_t> total_checks_processed{0};
     std::atomic<bool> found{false};
     bchaves::core::DerivedKeyInfo found_key;
     std::mutex found_mutex;
@@ -506,7 +540,11 @@ int run_address(const bchaves::system::AddressOptions& options) {
         ++diff;
         bchaves::core::BigInt remainder_adj(g_hybrid_chunk_size - 1);
         diff = diff + remainder_adj;
-        g_hybrid_total_chunks = bigint_div_u64(diff, g_hybrid_chunk_size);
+        if (!bigint_div_u64_checked(diff, g_hybrid_chunk_size, g_hybrid_total_chunks)) {
+            std::cerr << "\n[!] ERRO: o particionamento hybrid excede o limite atual de 64 bits para indice de chunks.\n";
+            std::cerr << "    Ajuste '-k' para reduzir o numero total de chunks ou use um range menor.\n\n";
+            return 1;
+        }
         if (g_hybrid_total_chunks == 0) g_hybrid_total_chunks = 1;
 
         bool resuming = false;
@@ -597,14 +635,14 @@ int run_address(const bchaves::system::AddressOptions& options) {
     if (options.mode == bchaves::system::SearchMode::hybrid) {
          for (std::uint32_t i = 0; i < num_threads; ++i) {
             active_workers.fetch_add(1, std::memory_order_relaxed);
-            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex, &active_workers]() {
+            workers.emplace_back([=, &matcher, &total_processed, &total_checks_processed, &found, &found_key, &found_mutex, &active_workers]() {
                 struct WorkerExitGuard {
                     std::atomic<std::uint32_t>& counter;
                     ~WorkerExitGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
                 } guard{active_workers};
                 bchaves::system::pin_thread_to_core(i);
-                run_hybrid_worker(i, start, matcher, options,
-                                total_processed, found_key, found, found_mutex,
+                run_hybrid_worker(i, start, end, matcher, options,
+                                total_processed, total_checks_processed, found_key, found, found_mutex,
                                 g_interrupt_requested);
             });
         }
@@ -745,7 +783,8 @@ int run_address(const bchaves::system::AddressOptions& options) {
         
         if (now - last_stats >= std::chrono::seconds(10)) {
             auto elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
-            double rate = static_cast<double>(total_processed.load()) / std::max<double>(1.0, (double)elapsed_sec);
+            const double key_rate = static_cast<double>(total_processed.load()) / std::max<double>(1.0, (double)elapsed_sec);
+            const double check_rate = static_cast<double>(total_checks_processed.load()) / std::max<double>(1.0, (double)elapsed_sec);
             
             if (options.mode == bchaves::system::SearchMode::hybrid) {
                 const uint64_t done = g_chunk_counter.load();
@@ -753,9 +792,10 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 const double pct = total_c > 0 ? (100.0 * done / total_c) : 0.0;
                 std::cout << "\r[*] Chunks: " << done << "/" << total_c
                           << " (" << std::fixed << std::setprecision(1) << pct << "%)"
-                          << " | Speed: " << bchaves::system::format_rate(rate) << "        " << std::flush;
+                          << " | Keys/s: " << bchaves::system::format_rate(key_rate)
+                          << " | Checks/s: " << bchaves::system::format_rate(check_rate) << "        " << std::flush;
             } else {
-                std::cout << "\r[*] Processado: " << bchaves::system::format_key_count((double)total_processed.load()) << " | Speed: " << bchaves::system::format_rate(rate) << "        " << std::flush;
+                std::cout << "\r[*] Processado: " << bchaves::system::format_key_count((double)total_processed.load()) << " | Speed: " << bchaves::system::format_rate(key_rate) << "        " << std::flush;
             }
             last_stats = now;
         }

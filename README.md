@@ -132,6 +132,22 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
     - `k=8192`: 8 milhões de chaves (Máxima diluição do custo ECC para puzzles 80+ bits).
 - **Aceleração via -k**: Valores maiores de `-k` reduzem a frequência de cálculos pesados de curva elíptica na inicialização de cada chunk, aumentando a taxa líquida de Keys/s.
 - **`-l <tipo>`**: Filtro de compressão de endereço (`compress`, `uncompress`, `both`).
+
+---
+
+## 📊 Telemetria e Performance
+
+Ao rodar o motor, você verá duas métricas de velocidade:
+
+- **`Keys/s` (Chaves Únicas)**: Representa o seu **progresso real** no range. Indica quantas chaves privadas distintas estão sendo percorridas por segundo. Use este número para estimar o tempo total da busca.
+- **`Checks/s` (Total de Hashes)**: Representa o **esforço bruto** da CPU. Indica quantos endereços (hashes) estão sendo verificados por segundo.
+
+### Por que os números são diferentes?
+O motor utiliza multiplicadores de eficiência. Por exemplo, no modo `hybrid` com `-l both`:
+- **Endomorfismo**: Triplica o trabalho (3 chaves relacionadas testadas por operação).
+- **Modo Both**: Quadruplica o trabalho (Testa 2 variações comprimidas e 2 não-comprimidas por chave).
+- **Resultado**: Cada 1 `Key/s` gera **12 `Checks/s`**.
+
 - **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
 - **`--secp256k1-backend <auto|portable>`**: Seleciona o kernel matemático.
     - `auto`: Escolhe a versão mais rápida disponível (ex: otimizada para x86_64).

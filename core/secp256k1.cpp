@@ -10,6 +10,7 @@
 #include "core/secp256k1.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -63,6 +64,26 @@ void sub_5_by_4(std::array<std::uint64_t, 5>& lhs, const BigInt& rhs) {
     }
 }
 
+inline std::uint64_t sub_borrow_u64(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t borrow_in, std::uint64_t& borrow_out) {
+    const std::uint64_t diff = lhs - rhs;
+    const std::uint64_t borrow1 = lhs < rhs ? 1ULL : 0ULL;
+    const std::uint64_t out = diff - borrow_in;
+    const std::uint64_t borrow2 = diff < borrow_in ? 1ULL : 0ULL;
+    borrow_out = (borrow1 | borrow2);
+    return out;
+}
+
+inline void write_big_endian_32(const BigInt& value, std::uint8_t* out) {
+    const std::uint64_t limb3 = __builtin_bswap64(value.limbs[3]);
+    const std::uint64_t limb2 = __builtin_bswap64(value.limbs[2]);
+    const std::uint64_t limb1 = __builtin_bswap64(value.limbs[1]);
+    const std::uint64_t limb0 = __builtin_bswap64(value.limbs[0]);
+    std::memcpy(out, &limb3, sizeof(limb3));
+    std::memcpy(out + 8, &limb2, sizeof(limb2));
+    std::memcpy(out + 16, &limb1, sizeof(limb1));
+    std::memcpy(out + 24, &limb0, sizeof(limb0));
+}
+
 BigInt reduce_wide_mod(const std::uint64_t wide[8], const BigInt& mod) {
     std::array<std::uint64_t, 5> rem{};
     for (int bit = 511; bit >= 0; --bit) {
@@ -87,39 +108,56 @@ BigInt reduce_wide_mod(const std::uint64_t wide[8], const BigInt& mod) {
 }
 
 BigInt add_mod_exact(const BigInt& a, const BigInt& b, const BigInt& mod) {
-    std::array<std::uint64_t, 5> sum{};
-    unsigned __int128 carry = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-        carry = static_cast<unsigned __int128>(a.limbs[i]) + b.limbs[i] + carry;
-        sum[i] = static_cast<std::uint64_t>(carry);
-        carry >>= 64u;
-    }
-    sum[4] = static_cast<std::uint64_t>(carry);
-    if (compare_5_to_4(sum, mod) >= 0) {
-        sub_5_by_4(sum, mod);
-    }
     BigInt out;
-    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = sum[i];
+    unsigned __int128 acc = static_cast<unsigned __int128>(a.limbs[0]) + b.limbs[0];
+    out.limbs[0] = static_cast<std::uint64_t>(acc);
+    std::uint64_t carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(a.limbs[1]) + b.limbs[1] + carry;
+    out.limbs[1] = static_cast<std::uint64_t>(acc);
+    carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(a.limbs[2]) + b.limbs[2] + carry;
+    out.limbs[2] = static_cast<std::uint64_t>(acc);
+    carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(a.limbs[3]) + b.limbs[3] + carry;
+    out.limbs[3] = static_cast<std::uint64_t>(acc);
+    carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    if (carry != 0 || out >= mod) {
+        std::uint64_t borrow = 0;
+        out.limbs[0] = sub_borrow_u64(out.limbs[0], mod.limbs[0], 0, borrow);
+        out.limbs[1] = sub_borrow_u64(out.limbs[1], mod.limbs[1], borrow, borrow);
+        out.limbs[2] = sub_borrow_u64(out.limbs[2], mod.limbs[2], borrow, borrow);
+        out.limbs[3] = sub_borrow_u64(out.limbs[3], mod.limbs[3], borrow, borrow);
+    }
     return out;
 }
 
 BigInt sub_mod_exact(const BigInt& a, const BigInt& b, const BigInt& mod) {
-    if (a >= b) {
-        return a - b;
-    }
-
-    std::array<std::uint64_t, 5> value{};
-    unsigned __int128 carry = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-        carry = static_cast<unsigned __int128>(a.limbs[i]) + mod.limbs[i] + carry;
-        value[i] = static_cast<std::uint64_t>(carry);
-        carry >>= 64u;
-    }
-    value[4] = static_cast<std::uint64_t>(carry);
-    sub_5_by_4(value, b);
-
     BigInt out;
-    for (std::size_t i = 0; i < 4; ++i) out.limbs[i] = value[i];
+    std::uint64_t borrow = 0;
+    out.limbs[0] = sub_borrow_u64(a.limbs[0], b.limbs[0], 0, borrow);
+    out.limbs[1] = sub_borrow_u64(a.limbs[1], b.limbs[1], borrow, borrow);
+    out.limbs[2] = sub_borrow_u64(a.limbs[2], b.limbs[2], borrow, borrow);
+    out.limbs[3] = sub_borrow_u64(a.limbs[3], b.limbs[3], borrow, borrow);
+    if (borrow == 0) return out;
+
+    unsigned __int128 acc = static_cast<unsigned __int128>(out.limbs[0]) + mod.limbs[0];
+    out.limbs[0] = static_cast<std::uint64_t>(acc);
+    std::uint64_t carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(out.limbs[1]) + mod.limbs[1] + carry;
+    out.limbs[1] = static_cast<std::uint64_t>(acc);
+    carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(out.limbs[2]) + mod.limbs[2] + carry;
+    out.limbs[2] = static_cast<std::uint64_t>(acc);
+    carry = static_cast<std::uint64_t>(acc >> 64u);
+
+    acc = static_cast<unsigned __int128>(out.limbs[3]) + mod.limbs[3] + carry;
+    out.limbs[3] = static_cast<std::uint64_t>(acc);
     return out;
 }
 
@@ -499,12 +537,7 @@ BigInt mod_mul(const BigInt& a, const BigInt& b, const BigInt& p) {
 
 std::array<std::uint8_t, 32> to_bytes32(const BigInt& value) {
     std::array<std::uint8_t, 32> out{};
-    for (int i = 0; i < 4; ++i) {
-        std::uint64_t limb = value.limbs[i];
-        for(int j=0; j<8; ++j) {
-            out[31 - (i * 8 + j)] = static_cast<std::uint8_t>((limb >> (j * 8)) & 0xff);
-        }
-    }
+    write_big_endian_32(value, out.data());
     return out;
 }
 
@@ -791,15 +824,12 @@ std::size_t serialize_pubkey(const Secp256k1Point& point, bool compressed, std::
     if (point.infinity) return 0;
     if (compressed) {
         out[0] = point.y.is_odd() ? 0x03u : 0x02u;
-        const auto x_bytes = to_bytes32(point.x);
-        std::copy(x_bytes.begin(), x_bytes.end(), out + 1);
+        write_big_endian_32(point.x, out + 1);
         return 33;
     } else {
         out[0] = 0x04u;
-        const auto x_bytes = to_bytes32(point.x);
-        const auto y_bytes = to_bytes32(point.y);
-        std::copy(x_bytes.begin(), x_bytes.end(), out + 1);
-        std::copy(y_bytes.begin(), y_bytes.end(), out + 33);
+        write_big_endian_32(point.x, out + 1);
+        write_big_endian_32(point.y, out + 33);
         return 65;
     }
 }

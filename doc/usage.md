@@ -59,3 +59,25 @@ Antigamente o Kangaroo exigia ranges em Hexadecimal. Agora você pode usar bits:
 1.  **Número de Threads (`-t`)**: O padrão é detectar automaticamente, mas para máxima performance em máquinas dedicadas, você pode definir manualmente para o número de núcleos físicos.
 2.  **Uso de RAM**: Em modo BSGS, agora usamos apenas **16 bytes** por ponto. Uma máquina com 16GB de RAM pode carregar quase 1 bilhão de Baby Steps.
 3.  **Dumping em SSD**: Se usar o Kangaroo por longas horas, o sistema fará o *merge* das armadilhas no disco. Certifique-se de usar um SSD/NVMe rápido para evitar latência no I/O de persistência. O Bchaves agora detecta colisões diretamente no disco se o Cuckoo Filter disparar um alerta.
+
+## 📊 Entendendo a Telemetria (Keys vs Checks)
+
+Ao rodar o motor de endereços, você verá duas velocidades. Elas representam coisas diferentes:
+
+### 1. Keys/s (Velocidade de Avanço)
+Indica quantas **chaves privadas únicas** do range você está eliminando por segundo. 
+- Se você está no puzzle 71, o range tem $2^{70}$ chaves. 
+- Com **500 K/s**, o tempo estimado para cobrir o range é calculado com base neste número.
+
+### 2. Checks/s (Potência da CPU)
+Indica quantas **comparações contra o alvo** estão sendo feitas. Devido às propriedades matemáticas da Secp256k1 e aos filtros de endereço, o motor testa várias combinações para cada chave:
+
+| Recurso Ativo | Multiplicador | Descrição |
+| :--- | :--- | :--- |
+| **Endomorfismo** | x3 | Testa $k$, $\lambda k$ e $\lambda^2 k$ simultaneamente. |
+| **Modo `compress`** | x2 | Testa os endereços 0x02 e 0x03. |
+| **Modo `uncompress`**| x2 | Testa o endereço 0x04 e sua negação. |
+| **Modo `both`** | x4 | Testa todas as 4 variações acima. |
+
+**Exemplo:** Se você usa `-R hybrid -l both`, o multiplicador total é $3 \times 4 = 12$. 
+Assim, **1.0 M/s de Keys/s** resultará em **12.0 M/s de Checks/s**.

@@ -299,6 +299,46 @@ static void test_bytes32_roundtrip() {
 }
 
 // ============================================================
+// mod_add / mod_sub: aritmética modular básica
+// ============================================================
+static void test_mod_arithmetic() {
+    std::cout << "[*] test_mod_arithmetic\n";
+
+    {
+        BigInt a = kFieldPrime;
+        --a;
+        BigInt b(1);
+        BigInt sum = mod_add(a, b, kFieldPrime);
+        EXPECT(sum.is_zero(), "mod_add wraps at field prime");
+    }
+
+    {
+        BigInt diff = mod_sub(BigInt(0), BigInt(1), kFieldPrime);
+        BigInt expected = kFieldPrime;
+        --expected;
+        EXPECT(diff == expected, "mod_sub underflow wraps with modulus");
+    }
+
+    {
+        BigInt a;
+        a.limbs[0] = 0xFFFFFFFFFFFFFFF0ULL;
+        a.limbs[1] = 0x0123456789ABCDEFULL;
+        a.limbs[2] = 0x0FEDCBA987654321ULL;
+        a.limbs[3] = 0x0000000000000001ULL;
+
+        BigInt b;
+        b.limbs[0] = 0x1234567890ABCDEFULL;
+        b.limbs[1] = 0x0000000000000010ULL;
+        b.limbs[2] = 0;
+        b.limbs[3] = 0;
+
+        BigInt sum = mod_add(a, b, kFieldPrime);
+        BigInt recovered = mod_sub(sum, b, kFieldPrime);
+        EXPECT(recovered == a, "mod_add/mod_sub round-trip preserves operand");
+    }
+}
+
+// ============================================================
 // batch_normalize: normalização de pontos Jacobian
 // ============================================================
 static void test_batch_normalize() {
@@ -434,6 +474,7 @@ int main() {
     test_glv_decomposition();
     test_mul_small();
     test_bytes32_roundtrip();
+    test_mod_arithmetic();
     test_batch_normalize();
     test_cli_contracts();
     test_checkpoint_roundtrip();
