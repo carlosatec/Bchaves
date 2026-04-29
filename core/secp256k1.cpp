@@ -379,12 +379,115 @@ void reduce_p256_64(std::uint64_t* res, const std::uint64_t* wide) {
 
 BigInt mod_mul_k1(const BigInt& a, const BigInt& b) {
     std::uint64_t wide[8]{};
-    mul_wide_256(a, b, wide);
-    return reduce_wide_mod(wide, kFieldPrime);
+
+    // Specialized reduction for the secp256k1 field prime.
+    unsigned __int128 p00 = static_cast<unsigned __int128>(a.limbs[0]) * b.limbs[0];
+    wide[0] = static_cast<std::uint64_t>(p00);
+    unsigned __int128 p01 = static_cast<unsigned __int128>(a.limbs[0]) * b.limbs[1] + (p00 >> 64u);
+    wide[1] = static_cast<std::uint64_t>(p01);
+    unsigned __int128 p02 = static_cast<unsigned __int128>(a.limbs[0]) * b.limbs[2] + (p01 >> 64u);
+    wide[2] = static_cast<std::uint64_t>(p02);
+    unsigned __int128 p03 = static_cast<unsigned __int128>(a.limbs[0]) * b.limbs[3] + (p02 >> 64u);
+    wide[3] = static_cast<std::uint64_t>(p03);
+    wide[4] = static_cast<std::uint64_t>(p03 >> 64u);
+
+    unsigned __int128 p10 = static_cast<unsigned __int128>(a.limbs[1]) * b.limbs[0] + wide[1];
+    wide[1] = static_cast<std::uint64_t>(p10);
+    unsigned __int128 p11 = static_cast<unsigned __int128>(a.limbs[1]) * b.limbs[1] + wide[2] + (p10 >> 64u);
+    wide[2] = static_cast<std::uint64_t>(p11);
+    unsigned __int128 p12 = static_cast<unsigned __int128>(a.limbs[1]) * b.limbs[2] + wide[3] + (p11 >> 64u);
+    wide[3] = static_cast<std::uint64_t>(p12);
+    unsigned __int128 p13 = static_cast<unsigned __int128>(a.limbs[1]) * b.limbs[3] + wide[4] + (p12 >> 64u);
+    wide[4] = static_cast<std::uint64_t>(p13);
+    wide[5] = static_cast<std::uint64_t>(p13 >> 64u);
+
+    unsigned __int128 p20 = static_cast<unsigned __int128>(a.limbs[2]) * b.limbs[0] + wide[2];
+    wide[2] = static_cast<std::uint64_t>(p20);
+    unsigned __int128 p21 = static_cast<unsigned __int128>(a.limbs[2]) * b.limbs[1] + wide[3] + (p20 >> 64u);
+    wide[3] = static_cast<std::uint64_t>(p21);
+    unsigned __int128 p22 = static_cast<unsigned __int128>(a.limbs[2]) * b.limbs[2] + wide[4] + (p21 >> 64u);
+    wide[4] = static_cast<std::uint64_t>(p22);
+    unsigned __int128 p23 = static_cast<unsigned __int128>(a.limbs[2]) * b.limbs[3] + wide[5] + (p22 >> 64u);
+    wide[5] = static_cast<std::uint64_t>(p23);
+    wide[6] = static_cast<std::uint64_t>(p23 >> 64u);
+
+    unsigned __int128 p30 = static_cast<unsigned __int128>(a.limbs[3]) * b.limbs[0] + wide[3];
+    wide[3] = static_cast<std::uint64_t>(p30);
+    unsigned __int128 p31 = static_cast<unsigned __int128>(a.limbs[3]) * b.limbs[1] + wide[4] + (p30 >> 64u);
+    wide[4] = static_cast<std::uint64_t>(p31);
+    unsigned __int128 p32 = static_cast<unsigned __int128>(a.limbs[3]) * b.limbs[2] + wide[5] + (p31 >> 64u);
+    wide[5] = static_cast<std::uint64_t>(p32);
+    unsigned __int128 p33 = static_cast<unsigned __int128>(a.limbs[3]) * b.limbs[3] + wide[6] + (p32 >> 64u);
+    wide[6] = static_cast<std::uint64_t>(p33);
+    wide[7] = static_cast<std::uint64_t>(p33 >> 64u);
+
+    BigInt out;
+    reduce_p256_64(out.limbs.data(), wide);
+    for (int i = 0; i < 2; ++i) {
+        if (out >= kFieldPrime) out -= kFieldPrime;
+    }
+    return out;
 }
 
 BigInt mod_square_k1(const BigInt& a) {
-    return mod_mul_k1(a, a);
+    std::uint64_t wide[8]{};
+    unsigned __int128 prod = 0;
+    unsigned __int128 carry = 0;
+
+    prod = static_cast<unsigned __int128>(a.limbs[0]) * a.limbs[1];
+    wide[1] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[0]) * a.limbs[2] + carry;
+    wide[2] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[0]) * a.limbs[3] + carry;
+    wide[3] = static_cast<std::uint64_t>(prod);
+    wide[4] = static_cast<std::uint64_t>(prod >> 64u);
+
+    prod = static_cast<unsigned __int128>(a.limbs[1]) * a.limbs[2] + wide[3];
+    wide[3] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[1]) * a.limbs[3] + wide[4] + carry;
+    wide[4] = static_cast<std::uint64_t>(prod);
+    wide[5] = static_cast<std::uint64_t>(prod >> 64u);
+
+    prod = static_cast<unsigned __int128>(a.limbs[2]) * a.limbs[3] + wide[5];
+    wide[5] = static_cast<std::uint64_t>(prod);
+    wide[6] = static_cast<std::uint64_t>(prod >> 64u);
+
+    std::uint64_t shift_carry = 0;
+    for (int i = 1; i < 7; ++i) {
+        const std::uint64_t value = wide[i];
+        wide[i] = (value << 1u) | shift_carry;
+        shift_carry = value >> 63u;
+    }
+    wide[7] = shift_carry;
+
+    prod = static_cast<unsigned __int128>(a.limbs[0]) * a.limbs[0];
+    wide[0] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[1]) * a.limbs[1] + wide[2] + carry;
+    wide[2] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[2]) * a.limbs[2] + wide[4] + carry;
+    wide[4] = static_cast<std::uint64_t>(prod);
+    carry = prod >> 64u;
+
+    prod = static_cast<unsigned __int128>(a.limbs[3]) * a.limbs[3] + wide[6] + carry;
+    wide[6] = static_cast<std::uint64_t>(prod);
+    wide[7] += static_cast<std::uint64_t>(prod >> 64u);
+
+    BigInt out;
+    reduce_p256_64(out.limbs.data(), wide);
+    for (int i = 0; i < 2; ++i) {
+        if (out >= kFieldPrime) out -= kFieldPrime;
+    }
+    return out;
 }
 
 // Optimized mod_mul
@@ -460,7 +563,32 @@ bool is_point_on_curve(const BigInt& x, const BigInt& y) {
 BigInt mod_inv(const BigInt& a, const BigInt& p) {
     if (a.is_zero()) return BigInt(0);
     if (p == kFieldPrime) {
-        return mod_pow_k1(a, kFieldPrime - BigInt(2));
+        BigInt u = a;
+        BigInt v = p;
+        BigInt x1(1);
+        BigInt x2(0);
+        while (!u.is_zero() && u != BigInt(1)) {
+            while (!u.is_odd()) {
+                u = u >> 1;
+                if (x1.is_odd()) x1 += p;
+                x1 = x1 >> 1;
+            }
+            while (!v.is_odd()) {
+                v = v >> 1;
+                if (x2.is_odd()) x2 += p;
+                x2 = x2 >> 1;
+            }
+            if (u >= v) {
+                u -= v;
+                if (x1 < x2) x1 += p;
+                x1 -= x2;
+            } else {
+                v -= u;
+                if (x2 < x1) x2 += p;
+                x2 -= x1;
+            }
+        }
+        return x1;
     }
 
     BigInt exponent = p - BigInt(2);
