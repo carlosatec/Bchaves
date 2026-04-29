@@ -175,11 +175,9 @@ void run_hybrid_worker(
         const uint64_t my_idx = g_chunk_counter.fetch_add(1, std::memory_order_relaxed);
         if (my_idx >= g_hybrid_total_chunks) break;
         
-        uint64_t sm_x = my_idx * g_chunk_step;
-        sm_x ^= sm_x >> 33; sm_x *= 0xff51afd7ed558ccdULL;
-        sm_x ^= sm_x >> 33; sm_x *= 0xc4ceb9fe1a85ec53ULL;
-        sm_x ^= sm_x >> 33;
-        const uint64_t chunk_id = sm_x % g_hybrid_total_chunks;
+        // LCG puro: gcd(g_chunk_step, g_hybrid_total_chunks) == 1
+        // garante bijeção (cobertura total sem repetições).
+        const uint64_t chunk_id = (my_idx * g_chunk_step) % g_hybrid_total_chunks;
 
         bchaves::core::BigInt cur_key = range_start;
         cur_key += bchaves::core::BigInt(chunk_id) * big_chunk;

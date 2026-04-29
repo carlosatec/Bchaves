@@ -11,7 +11,8 @@ O sistema salva o progresso automaticamente de forma segura em arquivos binário
 
 A busca identifica P2PKH, P2SH e Bech32. Além disso, o motor oferece quatro estratégias de exploração:
 
-1.  **`-R hybrid`**: **(Recomendado)** Usa bijeção LCG para varrer o range de forma desordenada mas completa (100% de cobertura).
+1.  **`-R hybrid`**: **(Recomendado)** Usa bijeção LCG pura para varrer o range de forma desordenada mas completa (100% de cobertura sem repetições).
+    -   **Upgrade Matemático**: Corrigido erro herdado de códigos legados (SplitMix64 mix) que quebrava a bijeção. Agora cada Keys/s é garantidamente único.
     -   **Uso de `-k`**: Controla o tamanho do "chunk". Ex: `-k 4096` cria blocos de 4 milhões de chaves.
     -   **Otimização Endo**: Ativa automaticamente a fusão de endomorfismo para triplicar o MH/s. Use `--no-endo` para desativar.
 2.  **`-R sequential/backward`**: Busca linear para ranges muito curtos onde o overhead do LCG não se justifica.
@@ -57,4 +58,4 @@ Antigamente o Kangaroo exigia ranges em Hexadecimal. Agora você pode usar bits:
 
 1.  **Número de Threads (`-t`)**: O padrão é detectar automaticamente, mas para máxima performance em máquinas dedicadas, você pode definir manualmente para o número de núcleos físicos.
 2.  **Uso de RAM**: Em modo BSGS, agora usamos apenas **16 bytes** por ponto. Uma máquina com 16GB de RAM pode carregar quase 1 bilhão de Baby Steps.
-3.  **Dumping em SSD**: Se usar o Kangaroo por longas horas, certifique-se de que o diretório `traps/` está em um SSD/NVMe rápido, para não travar a CPU durante o despejo de dados.
+3.  **Dumping em SSD**: Se usar o Kangaroo por longas horas, o sistema fará o *merge* das armadilhas no disco. Certifique-se de usar um SSD/NVMe rápido para evitar latência no I/O de persistência. O Bchaves agora detecta colisões diretamente no disco se o Cuckoo Filter disparar um alerta.

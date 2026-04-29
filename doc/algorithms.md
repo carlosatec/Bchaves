@@ -11,9 +11,10 @@ O motor `hybrid` é o principal explorador de ranges de bits do Bchaves. Ele uti
 Diferente de buscas puramente randômicas que podem revisitar a mesma chave, o Bchaves utiliza uma bijeção matemática:
 1.  **Divisão de Range**: O range total ($2^{bits}$) é dividido em $N$ chunks de tamanho fixo (definido por `-k`).
 2.  **Passo Coprimo**: O sistema gera um passo $S$ que é coprimo ao total de chunks $N$ ($gcd(S, N) = 1$).
-3.  **Permutação**: A thread $i$ visita o chunk $C = (i \times S) \mod N$.
-    -   Isso garante que **cada chunk seja visitado exatamente uma vez** antes da repetição de qualquer bloco.
-    -   A exploração é pseudoaleatória, evitando que todas as threads busquem na mesma região consecutivamente.
+3.  **Bijeção Pura (Exclusivo Bchaves)**: Diferente de implementações baseadas em projetos legados que aplicavam hashes (como SplitMix64) sobre o passo LCG, o Bchaves utiliza a fórmula pura $(i \times S) \mod N$.
+    -   **Correção Crítica**: Removemos a distorção matemática que causava colisões e repetição de chunks. 
+    -   Isso garante que **cada chunk seja visitado exatamente uma vez** com 100% de cobertura determinística.
+    -   A exploração é pseudoaleatória mas matematicamente perfeita, garantindo que nenhum Keys/s seja desperdiçado em chaves repetidas.
 
 ### Eficiência ECC por Chunk
 Cada thread calcula o ponto inicial do chunk em coordenadas Jacobianas uma única vez através de `secp256k1_multiply()`. O restante do chunk (ex: 4 milhões de chaves) é processado via somas incrementais (`add_points_mixed`), reduzindo drasticamente o peso computacional por chave encontrada.
@@ -31,10 +32,11 @@ O Bchaves utiliza uma arquitetura de armazenamento **Flat** otimizada para densi
 ## 2. Pollard's Kangaroo
 Usado quando o alvo é uma Public Key conhecida e o range de busca é limitado (ou muito grande).
 
-### Architectural Fleet Model
-O Bchaves utiliza um modelo de "frota" onde cada thread gerencia 64 "cangurus" simultaneamente.
-- **Distinguished Points:** O sistema usa pontos distintos para identificar colisões entre cangurus selvagens e domesticados.
-- **Disk Dumping (NVMe):** Quando a RAM atinge 80% de uso, o sistema despeja as "armadilhas" (traps) no diretório `traps/`. Isso permite que a busca continue por dias ou meses sem estourar a memória.
+### Architectural Fleet Model (Ultra-RAM)
+O Bchaves utiliza um modelo de "frota" onde cada thread gerencia 64 "cangurus" simultaneamente com alta persistência.
+- **Distinguished Points:** Identificação de colisões entre cangurus selvagens e domesticados via bits de paridade.
+- **Persistent Trap Merge:** Quando a RAM atinge o limite, as armadilhas são mescladas (merge) nos arquivos `traps/shard_X.bin`. Diferente de outros motores, o Bchaves não apaga o histórico anterior, garantindo que o progresso de meses de busca seja preservado.
+- **Disk-Lookup Collision:** Se um canguru atinge um ponto identificado pelo Cuckoo Filter que não está na RAM, o sistema realiza uma busca binária no disco para validar a colisão. Isso permite encontrar a chave mesmo que a armadilha correspondente tenha sido salva há semanas.
 
 ## 3. Otimização GLV (Endo Fusion)
 Implementada no `core/secp256k1.cpp` e fundida no motor `address.cpp`.

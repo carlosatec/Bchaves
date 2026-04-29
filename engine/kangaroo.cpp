@@ -185,6 +185,34 @@ uint64_t load_traps_from_disk(std::vector<TrapShard>& shards,
 // Fase 1: Dump Bufferizado - Escrita assíncrona para disco
 // ============================================================
 
+// Buscar uma armadilha no arquivo de shard no disco.
+// Retorna true se encontrou e preenche 'out_trap'.
+bool lookup_trap_on_disk(int shard_idx,
+                         uint64_t target_hash,
+                         KangarooTrap& out_trap,
+                         const bchaves::core::BigInt& range_start,
+                         const bchaves::core::BigInt& range_end) {
+    std::string filename = "traps/shard_" + std::to_string(shard_idx) + ".bin";
+    std::ifstream in(filename, std::ios::binary);
+    if (!in.is_open()) return false;
+    if (!validate_trap_header(in, range_start, range_end)) return false;
+
+    while (in.good() && !in.eof()) {
+        uint64_t hash = 0;
+        bchaves::core::BigInt distance;
+        uint8_t wild = 0;
+        in.read(reinterpret_cast<char*>(&hash), sizeof(hash));
+        in.read(reinterpret_cast<char*>(distance.limbs.data()), 32);
+        in.read(reinterpret_cast<char*>(&wild), 1);
+        if (!in.good()) break;
+        if (hash == target_hash) {
+            out_trap = {distance, wild != 0};
+            return true;
+        }
+    }
+    return false;
+}
+
 void dump_shards_to_disk(std::vector<TrapShard>& shards,
                          const bchaves::core::BigInt& range_start,
                          const bchaves::core::BigInt& range_end) {
@@ -200,18 +228,43 @@ void dump_shards_to_disk(std::vector<TrapShard>& shards,
 
         std::string filename = "traps/shard_" + std::to_string(i) + ".bin";
 
-        // Sempre reescrever o arquivo completo (com header)
+        // Merge: carregar traps existentes do disco, adicionar as da RAM, reescrever tudo.
+        // Isto preserva o histórico completo sem duplicatas.
+        std::unordered_map<uint64_t, KangarooTrap> merged;
+
+        // 1. Carregar dados existentes do disco
+        {
+            std::ifstream in(filename, std::ios::binary);
+            if (in.is_open() && validate_trap_header(in, range_start, range_end)) {
+                while (in.good() && !in.eof()) {
+                    uint64_t hash = 0;
+                    bchaves::core::BigInt distance;
+                    uint8_t wild = 0;
+                    in.read(reinterpret_cast<char*>(&hash), sizeof(hash));
+                    in.read(reinterpret_cast<char*>(distance.limbs.data()), 32);
+                    in.read(reinterpret_cast<char*>(&wild), 1);
+                    if (!in.good()) break;
+                    merged[hash] = {distance, wild != 0};
+                }
+            }
+        }
+
+        // 2. Sobrescrever com dados da RAM (mais recentes)
+        for (const auto& [hash, trap] : shard.table) {
+            merged[hash] = trap;
+        }
+
+        // 3. Reescrever o arquivo completo com o merge
         std::ofstream out(filename, std::ios::binary | std::ios::trunc);
         if (!out) continue;
 
         write_trap_header(out, range_start, range_end);
 
-        // Buffer de escrita: acumular em memória antes de flush
-        constexpr size_t ENTRY_SIZE = 8 + 32 + 1; // hash + distance + wild
+        constexpr size_t ENTRY_SIZE = 8 + 32 + 1;
         std::vector<char> write_buf;
-        write_buf.reserve(shard.table.size() * ENTRY_SIZE);
+        write_buf.reserve(merged.size() * ENTRY_SIZE);
 
-        for (const auto& [hash, trap] : shard.table) {
+        for (const auto& [hash, trap] : merged) {
             const char* hp = reinterpret_cast<const char*>(&hash);
             write_buf.insert(write_buf.end(), hp, hp + sizeof(hash));
 
@@ -223,11 +276,11 @@ void dump_shards_to_disk(std::vector<TrapShard>& shards,
         }
 
         out.write(write_buf.data(), static_cast<std::streamsize>(write_buf.size()));
-        total_dumped += shard.table.size();
+        total_dumped += merged.size();
     }
 
-    std::cout << "\n[+] Dump bufferizado: " << total_dumped
-              << " armadilhas salvas no disco.\n";
+    std::cout << "\n[+] Dump merge: " << total_dumped
+              << " armadilhas totais no disco (RAM + histórico).\n";
 }
 
 } // namespace
@@ -287,9 +340,11 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     uint64_t max_traps = (hw.ram_available * 8) / 10 / 48; // 80% da RAM, ~48 bytes por trap
     if (max_traps < 100000) max_traps = 100000;
 
-    // Cuckoo Filter dimensionado para o limite de armadilhas
-    auto trap_filter = std::make_unique<bchaves::core::CuckooFilter>(
-        std::min(max_traps, (uint64_t)50000000)); // Cap em 50M para filtro inicial
+    // Cuckoo Filter dimensionado para o total esperado (RAM + Disco).
+    // O filtro NUNCA é limpo, pois ele representa o universo completo de armadilhas
+    // que existem em RAM + Disco combinados. ~128MB para 500M entradas.
+    constexpr uint64_t FILTER_CAPACITY = 500000000ULL; // 500M entradas
+    auto trap_filter = std::make_unique<bchaves::core::CuckooFilter>(FILTER_CAPACITY);
 
     std::cout << "[+] Limite de RAM: " << (hw.ram_available / 1024 / 1024) << " MB\n";
     std::cout << "[+] Limite de Armadilhas em RAM: " << max_traps << "\n";
@@ -380,9 +435,23 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
                     auto& shard = shards[shard_idx];
                     std::lock_guard<std::mutex> lock(shard.mtx);
 
-                    if (maybe_exists && shard.table.count(h)) {
-                        auto& other = shard.table[h];
-                        if (other.is_wild != k.is_wild) {
+                    if (maybe_exists) {
+                        // Tentar encontrar na RAM primeiro
+                        KangarooTrap other;
+                        bool found_in_ram = false;
+                        bool found_on_disk = false;
+
+                        auto it = shard.table.find(h);
+                        if (it != shard.table.end()) {
+                            other = it->second;
+                            found_in_ram = true;
+                        } else {
+                            // Fallback: buscar no disco (a trap pode ter sido
+                            // despejada em um ciclo anterior de limpeza de RAM)
+                            found_on_disk = lookup_trap_on_disk(shard_idx, h, other, range_start, range_end);
+                        }
+
+                        if ((found_in_ram || found_on_disk) && other.is_wild != k.is_wild) {
                             std::lock_guard<std::mutex> slock(sol_mtx);
                             if (!found.load()) {
                                 found = true;
@@ -394,8 +463,10 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
                             }
                             return;
                         }
-                        // Colisão same-type: ignorar (não é útil)
-                    } else {
+                        // Colisão same-type ou falso positivo do Cuckoo: ignorar
+                    }
+                    // Inserir nova armadilha (se não existia)
+                    if (!shard.table.count(h)) {
                         shard.table[h] = {k.distance, k.is_wild};
                         trap_filter->insert(h);
                         total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);

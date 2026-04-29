@@ -10,7 +10,8 @@ O **Bchaves** é uma ferramenta de busca de chaves privadas Bitcoin de ultra-alt
 - **Motor SIMD AVX2 Nativo**: Processamento de 8 hashes SHA-256 e RIPEMD-160 em paralelo por ciclo, agora integrado ao pipeline de endomorfismo.
 - **Blindagem de Checkpoint v5**: Validação rigorosa de parâmetros (`-k`, `-R`) para evitar corrupção de progresso e garantir retomada atômica.
 - **Suporte Multi-Formato Full**: Busca simultânea de endereços `compress`, `uncompress` e `both` com pipeline de paridade corrigida.
-- **Filtro Cuckoo Integrado**: Busca probabilística de alvos em O(1), eliminando gargalos de comparação de memória.
+- **Filtro Cuckoo de Larga Escala**: Busca probabilística de alvos em O(1), agora dimensionado para gerenciar armadilhas de Kangaroo tanto em RAM quanto em Disco.
+- **Correção da Bijeção LCG**: O motor `hybrid` agora utiliza matemática pura sem hashing distorcivo, garantindo 100% de cobertura real e eliminando chaves duplicadas (Bug do Legado corrigido).
 
 ---
 
