@@ -13,11 +13,11 @@
 
 namespace bchaves::engine {
 
-void report_found(const bchaves::core::DerivedKeyInfo& info, const std::string& context) {
-    // 1. Salvar no arquivo (Persistência em primeiro lugar)
-    bchaves::system::save_found_result(info, context);
+void report_found(const bchaves::core::DerivedKeyInfo& info, const std::string& context, bool persist) {
+    if (persist) {
+        bchaves::system::save_found_result(info, context);
+    }
     
-    // 2. Exibir na tela (Interface visual)
     bchaves::system::print_success_report(info, context);
 }
 

@@ -44,6 +44,19 @@ ByteVector to_wif(const BigInt& private_key, bool compressed) {
     return key_bytes;
 }
 
+std::string to_wif_base58check(const BigInt& private_key, bool compressed) {
+    ByteVector payload;
+    payload.reserve(compressed ? 38 : 37);
+    payload.push_back(0x80);
+
+    const ByteVector key_bytes = to_wif(private_key, compressed);
+    payload.insert(payload.end(), key_bytes.begin(), key_bytes.end());
+
+    const auto checksum = double_sha256(payload);
+    payload.insert(payload.end(), checksum.begin(), checksum.begin() + 4);
+    return base58_encode(payload);
+}
+
 ByteVector hash_pubkey(const Secp256k1Point& point, bool compressed) {
     std::uint8_t buf[65];
     std::size_t len = serialize_pubkey(point, compressed, buf);
@@ -98,11 +111,9 @@ bool derive_key_info(const BigInt& private_key, DerivedKeyInfo& out) {
     out.address_compressed = base58_encode(hash_payload(hash_compressed, 0x00));
     out.address_uncompressed = base58_encode(hash_payload(hash_uncompressed, 0x00));
 
-    const auto wif_compressed = to_wif(private_key, true);
-    out.wif_compressed = base58_encode(wif_compressed);
+    out.wif_compressed = to_wif_base58check(private_key, true);
 
-    const auto wif_uncompressed = to_wif(private_key, false);
-    out.wif_uncompressed = base58_encode(wif_uncompressed);
+    out.wif_uncompressed = to_wif_base58check(private_key, false);
 
     return true;
 }

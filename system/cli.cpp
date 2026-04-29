@@ -72,6 +72,7 @@ void parse_common_flag(const std::string& arg, int argc, char** argv, int& index
         options.checkpoint_interval_seconds = static_cast<std::uint32_t>(std::stoul(require_value(argc, argv, index, arg)));
     } else if (arg == "--benchmark") {
         options.benchmark = true;
+        options.checkpoint_enabled = false;
     } else if (arg == "--secp256k1-backend") {
         options.secp256k1_backend = parse_secp256k1_backend(require_value(argc, argv, index, arg));
     } else if (arg == "--list-hardware") {
@@ -212,7 +213,7 @@ std::string address_help() {
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
-           "  --benchmark   sem checkpoint/FOUND.txt\n"
+           "  --benchmark   sem checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"
            "  --no-checkpoint\n"
@@ -225,7 +226,7 @@ std::string bsgs_help() {
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
-           "  --benchmark    executa sem gravar checkpoint/FOUND.txt\n"
+           "  --benchmark    executa sem gravar checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"
            "  --no-checkpoint\n"
@@ -242,7 +243,7 @@ std::string kangaroo_help() {
            "  --tame <N>     % de cangurus domesticados (default: 50). Ajusta estrategia de busca.\n"
            "  --no-load      pula o carregamento de armadilhas do disco (para benchmarks rapidos)\n"
            "  --list-hardware exibe informacoes da CPU e encerra\n"
-           "  --benchmark    executa sem gravar checkpoint/FOUND.txt\n"
+           "  --benchmark    executa sem gravar checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable|external\n"
            "  -c <arquivo>   checkpoint especifico\n"
            "  --no-checkpoint\n"

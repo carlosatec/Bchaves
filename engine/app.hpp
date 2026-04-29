@@ -35,6 +35,6 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options);
 /**
  * @brief Reporta uma chave encontrada: exibe na tela e salva em found.txt.
  */
-void report_found(const bchaves::core::DerivedKeyInfo& info, const std::string& context);
+void report_found(const bchaves::core::DerivedKeyInfo& info, const std::string& context, bool persist = true);
 
 }  // namespace bchaves::engine

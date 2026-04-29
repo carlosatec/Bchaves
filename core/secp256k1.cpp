@@ -10,6 +10,8 @@
 #include "core/secp256k1.hpp"
 
 #include <algorithm>
+#include <mutex>
+#include <vector>
 
 namespace bchaves::core {
 
@@ -208,11 +210,12 @@ BigInt operator/(const BigInt& lhs, const BigInt& rhs) {
 }
 
 bool mul_small_in_place(BigInt& value, std::uint32_t multiplier) {
-    std::uint64_t carry = 0;
+    unsigned __int128 carry = 0;
     for (std::size_t i = 0; i < value.limbs.size(); ++i) {
-        const std::uint64_t prod = (std::uint64_t)value.limbs[i] * multiplier + carry;
-        value.limbs[i] = (std::uint32_t)prod;
-        carry = prod >> 32u;
+        const unsigned __int128 prod =
+            static_cast<unsigned __int128>(value.limbs[i]) * multiplier + carry;
+        value.limbs[i] = static_cast<std::uint64_t>(prod);
+        carry = prod >> 64u;
     }
     return carry != 0;
 }
@@ -419,6 +422,33 @@ std::string to_hex(const std::vector<std::uint8_t>& data) {
     return out;
 }
 
+namespace {
+
+BigInt mod_pow_k1(BigInt base, BigInt exponent) {
+    BigInt result(1);
+    while (!exponent.is_zero()) {
+        if (exponent.is_odd()) {
+            result = mod_mul_k1(result, base);
+        }
+        exponent = exponent >> 1;
+        if (!exponent.is_zero()) {
+            base = mod_square_k1(base);
+        }
+    }
+    return result;
+}
+
+bool is_point_on_curve(const BigInt& x, const BigInt& y) {
+    if (x >= kFieldPrime || y >= kFieldPrime) {
+        return false;
+    }
+    const BigInt lhs = mod_square_k1(y);
+    const BigInt rhs = mod_add(mod_mul_k1(mod_square_k1(x), x), BigInt(7), kFieldPrime);
+    return lhs == rhs;
+}
+
+}  // namespace
+
 // Modular Inversion using Extended Euclidean Algorithm
 BigInt mod_inv(const BigInt& a, const BigInt& p) {
     if (a.is_zero()) return BigInt(0);
@@ -514,7 +544,14 @@ void batch_normalize(PointJacobian* points, Secp256k1Point* outputs, std::size_t
     if (count == 0) return;
     constexpr std::size_t MAX_STACK = 4096;
     alignas(32) std::uint64_t prod_storage[MAX_STACK * 4];
-    BigInt* prods = reinterpret_cast<BigInt*>(prod_storage);
+    std::vector<BigInt> dynamic_prods;
+    BigInt* prods = nullptr;
+    if (count <= MAX_STACK) {
+        prods = reinterpret_cast<BigInt*>(prod_storage);
+    } else {
+        dynamic_prods.resize(count);
+        prods = dynamic_prods.data();
+    }
     prods[0] = points[0].z;
     if (prods[0].is_zero()) prods[0] = 1;
     for (std::size_t i = 1; i < count; ++i) {
@@ -591,17 +628,16 @@ Secp256k1Point secp256k1_multiply(const BigInt& scalar) {
     
     // Windowed Scalar Multiplication (4-bit window)
     // Reduz o número de adições de ~128 (média) para ~64.
-    static bool precomputed = false;
+    static std::once_flag precomputed_once;
     static PointJacobian window[16];
-    if (!precomputed) {
+    std::call_once(precomputed_once, []() {
         window[0] = {0, 0, 0}; // Unused
         window[1] = to_jacobian(kGeneratorX, kGeneratorY);
         for (int i = 2; i < 16; ++i) {
             if (i % 2 == 0) window[i] = double_point(window[i/2]);
             else window[i] = add_points(window[i-1], window[1]);
         }
-        precomputed = true;
-    }
+    });
 
     PointJacobian res = {0, 0, 0};
     for (int i = 252; i >= 0; i -= 4) {
@@ -656,15 +692,37 @@ Secp256k1Point deserialize_pubkey(const std::uint8_t* data, std::size_t length) 
         p.infinity = false;
         std::vector<uint8_t> x_v(data + 1, data + 33);
         std::vector<uint8_t> y_v(data + 33, data + 65);
-        parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x);
-        parse_big_int(bchaves::core::to_hex(y_v).c_str(), p.y);
+        if (!parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x) ||
+            !parse_big_int(bchaves::core::to_hex(y_v).c_str(), p.y) ||
+            !is_point_on_curve(p.x, p.y)) {
+            return {};
+        }
         return p;
     }
     if ((data[0] == 0x02 || data[0] == 0x03) && length == 33) {
         Secp256k1Point p;
         p.infinity = false;
         std::vector<uint8_t> x_v(data + 1, data + 33);
-        parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x);
+        if (!parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x) || p.x >= kFieldPrime) {
+            return {};
+        }
+
+        const BigInt rhs = mod_add(mod_mul_k1(mod_square_k1(p.x), p.x), BigInt(7), kFieldPrime);
+        const BigInt sqrt_exp = (kFieldPrime + BigInt(1)) >> 2;
+        BigInt y = mod_pow_k1(rhs, sqrt_exp);
+        if (mod_square_k1(y) != rhs) {
+            return {};
+        }
+
+        const bool expected_odd = data[0] == 0x03;
+        if (y.is_odd() != expected_odd) {
+            y = mod_sub(kFieldPrime, y, kFieldPrime);
+        }
+        if (!is_point_on_curve(p.x, y)) {
+            return {};
+        }
+
+        p.y = y;
         return p; 
     }
     return {};
@@ -694,45 +752,46 @@ Secp256k1Point multi_multiply_128(const Secp256k1Point& p1, const BigInt& s1, co
 }
 
 void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& k2_neg) {
-    // Parâmetros GLV para secp256k1
-    // n = order
-    // b1 = [b11, b12], b2 = [b21, b22]
     static const BigInt n = kCurveOrder;
-    [[maybe_unused]] static const BigInt b12 = parse_hex("E79E57A8705B4A33830ACDC355AC8123");
-    [[maybe_unused]] static const BigInt b22 = parse_hex("7B102AF643C7196BA7D46BC882C60D1B");
+    static const BigInt b11 = parse_hex("3086D221A7D46BC882C60D1B");
+    static const BigInt b21 = parse_hex("E79E57A8705B4A33830ACDC355AC8123");
+    // b12 = -b21, b22 = b11
+
+    // c1 = round(k * b11 / n)
+    // c2 = round(k * b21 / n)
+    // Usamos aproximação de 128 bits para o arredondamento
+    unsigned __int128 k_hi = ((unsigned __int128)k.limbs[3] << 64) | k.limbs[2];
+    unsigned __int128 n_hi = ((unsigned __int128)n.limbs[3] << 64) | n.limbs[2];
+    unsigned __int128 b11_val = ((unsigned __int128)b11.limbs[1] << 64) | b11.limbs[0];
+    unsigned __int128 b21_val = ((unsigned __int128)b21.limbs[1] << 64) | b21.limbs[0];
+
+    unsigned __int128 c1 = (k_hi * b11_val + (n_hi >> 1)) / n_hi;
+    unsigned __int128 c2 = (k_hi * b21_val + (n_hi >> 1)) / n_hi;
+
+    // k1 = k - (c1*b11 + c2*b21)
+    // k2 = c1*b21 - c2*b11
+    BigInt term11 = BigInt((uint64_t)c1) * b11;
+    BigInt term21 = BigInt((uint64_t)c2) * b21;
+    BigInt sum_k1 = term11 + term21;
     
-    // Decomposição simplificada mas precisa para k < n:
-    // k2 = round(k * b12 / n)
-    // k1 = k - k2 * lambda (mod n)
-    
-    // Para k < n/2 (mais comum em puzzles e buscas segmentadas):
-    if (k.limbs[2] == 0 && k.limbs[3] == 0 && k.limbs[1] < 0x8000000000000000ULL) {
-        k1 = k;
-        k2 = BigInt(0);
+    if (k >= sum_k1) {
+        k1 = k - sum_k1;
         k1_neg = false;
-        k2_neg = false;
-        return;
+    } else {
+        k1 = sum_k1 - k;
+        k1_neg = true;
     }
 
-    // Algoritmo de Babai completo
-    // c1 = round(k * b22 / n)
-    // c2 = round(k * b12 / n) [negativo na lattice]
+    BigInt term12 = BigInt((uint64_t)c1) * b21;
+    BigInt term22 = BigInt((uint64_t)c2) * b11;
     
-    // Como k * b22 pode ter 512 bits, usamos __int128 para aproximação 128 bits alto:
-    // Usando uma aproximação de ponto fixo para evitar aritmética de 512 bits lenta:
-    [[maybe_unused]] unsigned __int128 k_high = ((unsigned __int128)k.limbs[3] << 64) | k.limbs[2];
-    [[maybe_unused]] unsigned __int128 n_high = ((unsigned __int128)n.limbs[3] << 64) | n.limbs[2];
-    
-    // k2 ≈ k >> 128 (aproximação grosseira para demonstração, refinável com as constantes b12/b22)
-    k1 = k;
-    k1.limbs[2] = 0; k1.limbs[3] = 0;
-    k2 = k >> 128;
-    k1_neg = false;
-    k2_neg = false;
-    
-    // Garante que k1 e k2 estão dentro de [0, n)
-    k1 = k1 % n;
-    k2 = k2 % n;
+    if (term12 >= term22) {
+        k2 = term12 - term22;
+        k2_neg = false;
+    } else {
+        k2 = term22 - term12;
+        k2_neg = true;
+    }
 }
 
 Secp256k1Point secp256k1_multiply_glv(const BigInt& scalar) {

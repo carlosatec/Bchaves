@@ -9,6 +9,7 @@
  */
 #include <vector>
 #include <cstring>
+#include <mutex>
 #include "core/hash.hpp"
 #include "system/hardware.hpp"
 
@@ -23,14 +24,13 @@ namespace bchaves::core {
 
 namespace {
 bool g_use_shani = false;
-bool g_initialized = false;
+std::once_flag g_dispatch_once;
 
 void init_dispatch() {
-    if (!g_initialized) {
+    std::call_once(g_dispatch_once, []() {
         auto info = bchaves::system::detect_hardware();
         g_use_shani = (info.features & bchaves::system::cpu_sha_ni) != 0;
-        g_initialized = true;
-    }
+    });
 }
 
 } // namespace
@@ -214,14 +214,14 @@ __attribute__((target("avx2")))
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
 #if defined(__x86_64__) || defined(__i386__)
-    if (length == 33) {
-        // --- AVX2 SIMD SHA-256 for 8 independent 33-byte buffers ---
+    if (length == 33 || length == 65) {
         const __m256i bswap_mask = _mm256_set_epi8(
             12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
             12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
         );
 
         __m256i W[64];
+        const __m256i zero = _mm256_setzero_si256();
 
         #define LOAD_W(i) _mm256_set_epi32( \
             *(const std::uint32_t*)(data[7] + i*4), *(const std::uint32_t*)(data[6] + i*4), \
@@ -229,25 +229,8 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
             *(const std::uint32_t*)(data[3] + i*4), *(const std::uint32_t*)(data[2] + i*4), \
             *(const std::uint32_t*)(data[1] + i*4), *(const std::uint32_t*)(data[0] + i*4))
 
-        for (int i = 0; i < 8; ++i) {
-            W[i] = _mm256_shuffle_epi8(LOAD_W(i), bswap_mask);
-        }
-
-        // W[8]: 33rd byte (index 32) + 0x80 padding
-        W[8] = _mm256_set_epi32(
-            ((std::uint32_t)data[7][32] << 24) | 0x00800000u, ((std::uint32_t)data[6][32] << 24) | 0x00800000u,
-            ((std::uint32_t)data[5][32] << 24) | 0x00800000u, ((std::uint32_t)data[4][32] << 24) | 0x00800000u,
-            ((std::uint32_t)data[3][32] << 24) | 0x00800000u, ((std::uint32_t)data[2][32] << 24) | 0x00800000u,
-            ((std::uint32_t)data[1][32] << 24) | 0x00800000u, ((std::uint32_t)data[0][32] << 24) | 0x00800000u
-        );
-
-        __m256i zero = _mm256_setzero_si256();
-        for (int i = 9; i < 15; ++i) W[i] = zero;
-        W[15] = _mm256_set1_epi32(264); // 33 bytes * 8 bits
-
         #define SHR(x, n) _mm256_srli_epi32(x, n)
         #define ROTR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - n))
-        // Limpa macros definidas em ripemd160.hpp para evitar warnings de redefinição
         #undef XOR
         #undef AND
         #undef ANDNOT
@@ -265,34 +248,91 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
         #define CH(e, f, g) XOR(AND(e, f), ANDNOT(e, g))
         #define MAJ(a, b, c) OR(AND(a, b), OR(AND(a, c), AND(b, c)))
 
-        for (int i = 16; i < 64; ++i) {
-            W[i] = ADD(ADD(SIG1(W[i - 2]), W[i - 7]), ADD(SIG0(W[i - 15]), W[i - 16]));
+        auto expand_schedule = [&]() {
+            for (int i = 16; i < 64; ++i) {
+                W[i] = ADD(ADD(SIG1(W[i - 2]), W[i - 7]), ADD(SIG0(W[i - 15]), W[i - 16]));
+            }
+        };
+
+        auto run_block = [&](__m256i state[8]) {
+            __m256i A = state[0];
+            __m256i B = state[1];
+            __m256i C = state[2];
+            __m256i D = state[3];
+            __m256i E = state[4];
+            __m256i F = state[5];
+            __m256i G = state[6];
+            __m256i H = state[7];
+
+            const __m256i initA = A;
+            const __m256i initB = B;
+            const __m256i initC = C;
+            const __m256i initD = D;
+            const __m256i initE = E;
+            const __m256i initF = F;
+            const __m256i initG = G;
+            const __m256i initH = H;
+
+            for (int i = 0; i < 64; ++i) {
+                __m256i T1 = ADD(ADD(ADD(H, EP1(E)), CH(E, F, G)), ADD(_mm256_set1_epi32(kTable_[i]), W[i]));
+                __m256i T2 = ADD(EP0(A), MAJ(A, B, C));
+                H = G; G = F; F = E; E = ADD(D, T1);
+                D = C; C = B; B = A; A = ADD(T1, T2);
+            }
+
+            state[0] = ADD(A, initA);
+            state[1] = ADD(B, initB);
+            state[2] = ADD(C, initC);
+            state[3] = ADD(D, initD);
+            state[4] = ADD(E, initE);
+            state[5] = ADD(F, initF);
+            state[6] = ADD(G, initG);
+            state[7] = ADD(H, initH);
+        };
+
+        __m256i state[8] = {
+            _mm256_set1_epi32(0x6a09e667u),
+            _mm256_set1_epi32(0xbb67ae85u),
+            _mm256_set1_epi32(0x3c6ef372u),
+            _mm256_set1_epi32(0xa54ff53au),
+            _mm256_set1_epi32(0x510e527fu),
+            _mm256_set1_epi32(0x9b05688cu),
+            _mm256_set1_epi32(0x1f83d9abu),
+            _mm256_set1_epi32(0x5be0cd19u),
+        };
+
+        if (length == 33) {
+            for (int i = 0; i < 8; ++i) {
+                W[i] = _mm256_shuffle_epi8(LOAD_W(i), bswap_mask);
+            }
+            W[8] = _mm256_set_epi32(
+                ((std::uint32_t)data[7][32] << 24) | 0x00800000u, ((std::uint32_t)data[6][32] << 24) | 0x00800000u,
+                ((std::uint32_t)data[5][32] << 24) | 0x00800000u, ((std::uint32_t)data[4][32] << 24) | 0x00800000u,
+                ((std::uint32_t)data[3][32] << 24) | 0x00800000u, ((std::uint32_t)data[2][32] << 24) | 0x00800000u,
+                ((std::uint32_t)data[1][32] << 24) | 0x00800000u, ((std::uint32_t)data[0][32] << 24) | 0x00800000u
+            );
+            for (int i = 9; i < 15; ++i) W[i] = zero;
+            W[15] = _mm256_set1_epi32(264);
+            expand_schedule();
+            run_block(state);
+        } else {
+            for (int i = 0; i < 16; ++i) {
+                W[i] = _mm256_shuffle_epi8(LOAD_W(i), bswap_mask);
+            }
+            expand_schedule();
+            run_block(state);
+
+            W[0] = _mm256_set_epi32(
+                ((std::uint32_t)data[7][64] << 24) | 0x00800000u, ((std::uint32_t)data[6][64] << 24) | 0x00800000u,
+                ((std::uint32_t)data[5][64] << 24) | 0x00800000u, ((std::uint32_t)data[4][64] << 24) | 0x00800000u,
+                ((std::uint32_t)data[3][64] << 24) | 0x00800000u, ((std::uint32_t)data[2][64] << 24) | 0x00800000u,
+                ((std::uint32_t)data[1][64] << 24) | 0x00800000u, ((std::uint32_t)data[0][64] << 24) | 0x00800000u
+            );
+            for (int i = 1; i < 15; ++i) W[i] = zero;
+            W[15] = _mm256_set1_epi32(520);
+            expand_schedule();
+            run_block(state);
         }
-
-        __m256i A = _mm256_set1_epi32(0x6a09e667u);
-        __m256i B = _mm256_set1_epi32(0xbb67ae85u);
-        __m256i C = _mm256_set1_epi32(0x3c6ef372u);
-        __m256i D = _mm256_set1_epi32(0xa54ff53au);
-        __m256i E = _mm256_set1_epi32(0x510e527fu);
-        __m256i F = _mm256_set1_epi32(0x9b05688cu);
-        __m256i G = _mm256_set1_epi32(0x1f83d9abu);
-        __m256i H = _mm256_set1_epi32(0x5be0cd19u);
-
-        for (int i = 0; i < 64; ++i) {
-            __m256i T1 = ADD(ADD(ADD(H, EP1(E)), CH(E, F, G)), ADD(_mm256_set1_epi32(kTable_[i]), W[i]));
-            __m256i T2 = ADD(EP0(A), MAJ(A, B, C));
-            H = G; G = F; F = E; E = ADD(D, T1);
-            D = C; C = B; B = A; A = ADD(T1, T2);
-        }
-
-        A = ADD(A, _mm256_set1_epi32(0x6a09e667u));
-        B = ADD(B, _mm256_set1_epi32(0xbb67ae85u));
-        C = ADD(C, _mm256_set1_epi32(0x3c6ef372u));
-        D = ADD(D, _mm256_set1_epi32(0xa54ff53au));
-        E = ADD(E, _mm256_set1_epi32(0x510e527fu));
-        F = ADD(F, _mm256_set1_epi32(0x9b05688cu));
-        G = ADD(G, _mm256_set1_epi32(0x1f83d9abu));
-        H = ADD(H, _mm256_set1_epi32(0x5be0cd19u));
 
         #define STORE_H(i, reg) do { \
             __m256i swapped = _mm256_shuffle_epi8(reg, bswap_mask); \
@@ -308,8 +348,8 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
             ((std::uint32_t*)out[7])[i] = arr[7]; \
         } while(0)
 
-        STORE_H(0, A); STORE_H(1, B); STORE_H(2, C); STORE_H(3, D);
-        STORE_H(4, E); STORE_H(5, F); STORE_H(6, G); STORE_H(7, H);
+        STORE_H(0, state[0]); STORE_H(1, state[1]); STORE_H(2, state[2]); STORE_H(3, state[3]);
+        STORE_H(4, state[4]); STORE_H(5, state[5]); STORE_H(6, state[6]); STORE_H(7, state[7]);
         
         return;
     }

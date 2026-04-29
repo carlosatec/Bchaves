@@ -33,9 +33,6 @@ namespace bchaves::engine {
 namespace {
 
 volatile std::sig_atomic_t g_interrupt_requested = 0;
-std::string g_g_checkpoint_path;
-
-// Removido - agora em app.hpp
 
 void handle_signal(int) {
     g_interrupt_requested = 1;
@@ -88,7 +85,8 @@ bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher) {
              matcher.filter->insert(filter_hash);
         }
     }
-    std::cout << "[+] Alvos (Hash160): " << matcher.hashes.size() << '\n';
+    std::sort(matcher.hashes.begin(), matcher.hashes.end());
+    std::cout << "[+] Alvos (Hash160): " << matcher.hashes.size() << " [Lookup O(log N) ativado]\n";
     return !matcher.hashes.empty();
 }
 
@@ -255,9 +253,15 @@ void run_hybrid_worker(
                         std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
                         if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
 
-                        for (const auto& target : matcher.hashes) {
-                            if (std::memcmp(batch_ripemd_out[u], target.data(), 20) == 0) {
-                                std::lock_guard<std::mutex> lock(found_mutex);
+                        std::array<uint8_t, 20> current_hash;
+                        std::memcpy(current_hash.data(), batch_ripemd_out[u], 20);
+
+                        if (std::binary_search(matcher.hashes.begin(), matcher.hashes.end(), current_hash)) {
+                            // Encontrou algum alvo.
+                            auto it = std::lower_bound(matcher.hashes.begin(), matcher.hashes.end(), current_hash);
+                            const auto& target = *it;
+                            
+                            std::lock_guard<std::mutex> lock(found_mutex);
                                 if (!found.load()) {
                                     bchaves::core::BigInt match_key = cur_key + bchaves::core::BigInt(batch_offsets[u]);
                                     
@@ -287,10 +291,6 @@ void run_hybrid_worker(
 
                                     bchaves::core::derive_key_info(match_key, found_key);
                                     found = true;
-                                    if (!options.benchmark) {
-                                        std::ofstream f("FOUND.txt", std::ios::app);
-                                        f << "Private Key: " << bchaves::core::bigint_to_hex(match_key) << "\n";
-                                    }
                                 }
                             }
                         }
@@ -405,6 +405,8 @@ void run_hybrid_worker(
 
 int run_address(const bchaves::system::AddressOptions& options) {
     auto hardware = bchaves::system::detect_hardware();
+    const bool checkpoint_enabled = options.checkpoint_enabled && !options.benchmark;
+    const bool persist_results = !options.benchmark;
     if (options.help) {
         std::cout << "[*] Hardware Detectado:\n"
                   << "    Cores: " << hardware.num_cores << " (Fisicos: " << hardware.num_physical_cores << ")\n"
@@ -444,6 +446,12 @@ int run_address(const bchaves::system::AddressOptions& options) {
     // Por enquanto, implementamos um despachante simples para validar o -t
     
     const std::string checkpoint_name = "address_" + std::to_string(options.bits) + "bit.ckp";
+    const std::filesystem::path sequential_checkpoint_path =
+        options.checkpoint_path.value_or(std::filesystem::path(checkpoint_name));
+    const auto hybrid_checkpoint_path = [&]() {
+        return options.checkpoint_path.value_or(
+            bchaves::system::default_checkpoint_path("address-hybrid", options.bits));
+    };
     bchaves::system::CheckpointState checkpoint{};
     checkpoint.algorithm = "address";
     checkpoint.range_start = bchaves::core::to_bytes32(start);
@@ -455,14 +463,15 @@ int run_address(const bchaves::system::AddressOptions& options) {
         if (g_hybrid_chunk_size < 1048576ULL) g_hybrid_chunk_size = 1048576ULL;
 
         bchaves::core::BigInt diff = end - start;
+        ++diff;
         bchaves::core::BigInt remainder_adj(g_hybrid_chunk_size - 1);
         diff = diff + remainder_adj;
         g_hybrid_total_chunks = bigint_div_u64(diff, g_hybrid_chunk_size);
         if (g_hybrid_total_chunks == 0) g_hybrid_total_chunks = 1;
 
         bool resuming = false;
-        if (options.checkpoint_enabled) {
-            const auto ckp_path = bchaves::system::default_checkpoint_path("address-hybrid", options.bits);
+        if (checkpoint_enabled) {
+            const auto ckp_path = hybrid_checkpoint_path();
             if (std::filesystem::exists(ckp_path)) {
                 std::string err;
                 if (bchaves::system::load_checkpoint(ckp_path, checkpoint, err)) {
@@ -501,9 +510,9 @@ int run_address(const bchaves::system::AddressOptions& options) {
                   << " total=" << g_hybrid_total_chunks
                   << " step=" << g_chunk_step << "\n";
     } else {
-        if (options.checkpoint_enabled && std::filesystem::exists(checkpoint_name)) {
+        if (checkpoint_enabled && std::filesystem::exists(sequential_checkpoint_path)) {
             std::string err;
-            if (bchaves::system::load_checkpoint(checkpoint_name, checkpoint, err)) {
+            if (bchaves::system::load_checkpoint(sequential_checkpoint_path, checkpoint, err)) {
                 total_processed = checkpoint.progress_primary;
                 bchaves::core::BigInt prog(total_processed.load());
                 start = start + prog;
@@ -513,11 +522,18 @@ int run_address(const bchaves::system::AddressOptions& options) {
     }
 
     std::vector<std::thread> workers;
+    std::atomic<std::uint32_t> active_workers{0};
     const size_t kBatchSize = tune.batch_size;
 
     if (options.mode == bchaves::system::SearchMode::hybrid) {
          for (std::uint32_t i = 0; i < num_threads; ++i) {
-            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex]() {
+            active_workers.fetch_add(1, std::memory_order_relaxed);
+            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex, &active_workers]() {
+                struct WorkerExitGuard {
+                    std::atomic<std::uint32_t>& counter;
+                    ~WorkerExitGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+                } guard{active_workers};
+                bchaves::system::pin_thread_to_core(i);
                 run_hybrid_worker(i, start, matcher, options,
                                 total_processed, found_key, found, found_mutex,
                                 g_interrupt_requested);
@@ -525,13 +541,20 @@ int run_address(const bchaves::system::AddressOptions& options) {
         }
     } else {
         for (std::uint32_t i = 0; i < num_threads; ++i) {
-            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex]() {
+            active_workers.fetch_add(1, std::memory_order_relaxed);
+            workers.emplace_back([=, &matcher, &total_processed, &found, &found_key, &found_mutex, &active_workers]() {
+                struct WorkerExitGuard {
+                    std::atomic<std::uint32_t>& counter;
+                    ~WorkerExitGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+                } guard{active_workers};
+                bchaves::system::pin_thread_to_core(i);
                 bchaves::core::BigInt current = start;
                 bchaves::core::BigInt thread_offset(i);
                 bchaves::core::BigInt thread_step(num_threads);
                 current += thread_offset * thread_step; 
                 
-                bchaves::core::PointJacobian p_jac = bchaves::core::to_jacobian(bchaves::core::secp256k1_multiply(current).x, bchaves::core::secp256k1_multiply(current).y);
+                const bchaves::core::Secp256k1Point start_point = bchaves::core::secp256k1_multiply(current);
+                bchaves::core::PointJacobian p_jac = bchaves::core::to_jacobian(start_point.x, start_point.y);
                 bchaves::core::BigInt step_g_key(num_threads);
                 bchaves::core::BigInt step_g_batch_key(num_threads * kBatchSize);
                 bchaves::core::Secp256k1Point step_g = bchaves::core::secp256k1_multiply(step_g_key);
@@ -588,13 +611,6 @@ int run_address(const bchaves::system::AddressOptions& options) {
                                         if (!found.load()) {
                                             bchaves::core::derive_key_info(batch_keys[k+u], found_key);
                                             found = true;
-                                            
-                                            if (!options.benchmark) {
-                                                std::ofstream f("FOUND.txt", std::ios::app);
-                                                f << "Private Key (HEX): " << bchaves::core::bigint_to_hex(batch_keys[k+u]) << "\n";
-                                                f << "Address (Comp):    " << found_key.address_compressed << "\n";
-                                                f << "--------------------------------------------------------\n";
-                                            }
                                         }
                                     }
                                 }
@@ -643,7 +659,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
             last_stats = now;
         }
 
-        if (options.checkpoint_enabled && now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
+        if (checkpoint_enabled && now - last_checkpoint >= std::chrono::seconds(options.checkpoint_interval_seconds)) {
             if (options.mode == bchaves::system::SearchMode::hybrid) {
                 const uint64_t done = g_chunk_counter.load();
                 checkpoint.algorithm = "address-hybrid";
@@ -653,22 +669,20 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 checkpoint.hybrid_total_chunks = g_hybrid_total_chunks;
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
-                const auto ckp_path = bchaves::system::default_checkpoint_path("address-hybrid", options.bits);
+                const auto ckp_path = hybrid_checkpoint_path();
                 bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
             } else {
                 checkpoint.progress_primary = total_processed.load();
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
-                if (bchaves::system::save_checkpoint(checkpoint_name, checkpoint, err)) {
+                if (bchaves::system::save_checkpoint(sequential_checkpoint_path, checkpoint, err)) {
                     // Checkpoint salvo silenciosamente
                 }
             }
             last_checkpoint = now;
         }
-        
-        bool all_done = true;
-        for(auto& t : workers) if(t.joinable()) { all_done = false; break; }
-        if(all_done) break;
+
+        if (active_workers.load(std::memory_order_relaxed) == 0) break;
     }
 
     for (auto& t : workers) if (t.joinable()) t.join();
@@ -676,13 +690,13 @@ int run_address(const bchaves::system::AddressOptions& options) {
 
     if (found.load()) {
         std::string ctx = "Address Search (bits:" + std::to_string(options.bits) + ")";
-        bchaves::engine::report_found(found_key, ctx);
+        bchaves::engine::report_found(found_key, ctx, persist_results);
         return 0;
     }
 
     if (g_interrupt_requested) {
         std::cout << "\n[!] Interrompido pelo usuário. Salvando estado final...\n";
-        if (options.checkpoint_enabled) {
+        if (checkpoint_enabled) {
             if (options.mode == bchaves::system::SearchMode::hybrid) {
                 const uint64_t done = g_chunk_counter.load();
                 checkpoint.algorithm = "address-hybrid";
@@ -692,13 +706,13 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 checkpoint.hybrid_total_chunks = g_hybrid_total_chunks;
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
-                const auto ckp_path = bchaves::system::default_checkpoint_path("address-hybrid", options.bits);
+                const auto ckp_path = hybrid_checkpoint_path();
                 bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
             } else {
                 checkpoint.progress_primary = total_processed.load();
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
-                if (bchaves::system::save_checkpoint(checkpoint_name, checkpoint, err)) {
+                if (bchaves::system::save_checkpoint(sequential_checkpoint_path, checkpoint, err)) {
                     std::cout << "[+] Checkpoint de emergência salvo com sucesso.\n";
                 } else {
                     std::cerr << "[E] Falha ao salvar checkpoint de emergência: " << err << "\n";

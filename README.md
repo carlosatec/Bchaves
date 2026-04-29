@@ -123,11 +123,11 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
 
 ---
 
-## 💾 Persistência e Checkpoints
-
-- **Checkpoint v5**: Agora o checkpoint é atômico e salva o contador exato de chunks processados.
-- **Resumo Automático**: Ao reiniciar uma busca interrompida, o Bchaves detecta o arquivo `.ckp` e retoma exatamente de onde parou.
-- **FOUND.txt**: Descobertas são salvas em log com a Chave Privada em HEX.
+- **Checkpoint v5**: Agora o checkpoint é atômico e salva o contador exato de chunks processados. Suporta `Address`, `BSGS` e `Kangaroo`.
+- **Controle de Caminho (`-c`)**: Use `-c <caminho>` para definir manualmente onde o checkpoint ou as armadilhas (Kangaroo) devem ser salvos.
+- **Resumo Automático**: Ao reiniciar uma busca interrompida, o Bchaves detecta o arquivo de checkpoint e retoma exatamente de onde parou.
+- **Kangaroo Ultra-Disk**: Busca de armadilhas no disco agora é O(log N), permitindo gerenciar bilhões de armadilhas sem perda de performance.
+- **found.txt**: Descobertas são salvas em log formatado com a Chave Privada em HEX, WIF e Endereço.
 
 ---
 
