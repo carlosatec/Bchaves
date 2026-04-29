@@ -30,7 +30,7 @@
 #include <iomanip> // Adicionado para setprecision
 
 namespace bchaves::engine {
-namespace {
+
 
 volatile std::sig_atomic_t g_interrupt_requested = 0;
 
@@ -292,7 +292,6 @@ void run_hybrid_worker(
                                     bchaves::core::derive_key_info(match_key, found_key);
                                     found = true;
                                 }
-                            }
                         }
                     }
                 };
@@ -401,7 +400,7 @@ void run_hybrid_worker(
         }
     }
 }
-} // namespace
+
 
 int run_address(const bchaves::system::AddressOptions& options) {
     auto hardware = bchaves::system::detect_hardware();

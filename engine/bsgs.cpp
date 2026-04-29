@@ -11,6 +11,7 @@
 #include "core/secp256k1.hpp"
 #include "core/cuckoo.hpp"
 #include "core/hash.hpp"
+#include "system/checkpoint.hpp"
 #include <iostream>
 #include <vector>
 #include <thread>
@@ -22,7 +23,7 @@
 #include <unordered_map>
 
 namespace bchaves::engine {
-namespace {
+
 
 struct Entry {
     uint64_t hash;
@@ -45,7 +46,7 @@ bool matches_target(const bchaves::core::BigInt& candidate, const bchaves::core:
     return !pub.infinity && pub.x == target.x && pub.y == target.y;
 }
 
-} // namespace
+
 
 int run_bsgs(const bchaves::system::BsgsOptions& options) {
     auto hardware = bchaves::system::detect_hardware();
@@ -136,6 +137,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     bchaves::core::BigInt solution;
     std::atomic<uint64_t> giant_count{0};
 
+    bchaves::system::CheckpointState checkpoint;
     auto worker = [&](int tid, int num_threads) {
         bchaves::system::pin_thread_to_core(static_cast<std::uint32_t>(tid));
         bchaves::core::BigInt giant_step_idx(tid);
@@ -195,6 +197,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
             giant_count += kGiantBatch;
         }
     };
+
 
     auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
     std::uint32_t num_threads = tune.threads;

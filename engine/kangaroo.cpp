@@ -26,7 +26,7 @@
 #include <chrono>
 
 namespace bchaves::engine {
-namespace {
+
 
 std::atomic<bool> g_stop_requested{false};
 void handle_sig(int) { g_stop_requested = true; }
@@ -48,6 +48,11 @@ struct TrapKey {
 
     bool operator==(const TrapKey& other) const {
         return odd == other.odd && x == other.x;
+    }
+
+    bool operator<(const TrapKey& other) const {
+        if (x != other.x) return x < other.x;
+        return odd < other.odd;
     }
 };
 
@@ -165,14 +170,12 @@ bool validate_trap_header(std::ifstream& in,
 uint64_t load_traps_from_disk(std::vector<TrapShard>& shards,
                               bchaves::core::CuckooFilter& filter,
                               const bchaves::core::BigInt& range_start,
-                              const bchaves::core::BigInt& range_end) {
+                              const bchaves::core::BigInt& range_end,
+                              const std::string& trap_dir) {
     uint64_t loaded = 0;
     std::error_code ec;
 
-    std::string trap_dir = "traps";
-    if (options.checkpoint_path.has_value()) {
-        trap_dir = options.checkpoint_path.value().string();
-    }
+
 
     if (!std::filesystem::exists(trap_dir, ec)) return 0;
 
@@ -368,10 +371,11 @@ void dump_shards_to_disk(const std::string& trap_dir,
               << " armadilhas totais no disco (RAM + histórico).\n";
 }
 
-} // namespace
+
 
 int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     auto hardware = bchaves::system::detect_hardware();
+    const std::string trap_dir = options.checkpoint_path.value_or(std::filesystem::path("traps")).string();
     const bool persist_traps = !options.benchmark;
     const bool load_traps = persist_traps && !options.no_load;
     if (options.help) {
@@ -431,7 +435,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // O filtro NUNCA é limpo, pois ele representa o universo completo de armadilhas
     // que existem em RAM + Disco combinados. 
     // Usamos ~10% da RAM livre para o filtro. Cada slot usa ~2 bytes (16-bit tag).
-    uint64_t filter_cap = std::max(100000000ULL, (hw.ram_available / 10) / 2);
+    uint64_t filter_cap = std::max((uint64_t)100000000ULL, (uint64_t)((hw.ram_available / 10) / 2));
     auto trap_filter = std::make_unique<bchaves::core::CuckooFilter>(filter_cap);
 
     std::cout << "[+] Limite de RAM: " << (hw.ram_available / 1024 / 1024) << " MB\n";
@@ -445,10 +449,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     bchaves::core::BigInt solution;
     std::mutex sol_mtx;
 
-    std::string trap_dir = "traps";
-    if (options.checkpoint_path.has_value()) {
-        trap_dir = options.checkpoint_path.value().string();
-    }
+
 
     // ============================================================
     // Fase 1: Cold Boot - Carregar armadilhas salvas anteriormente
@@ -458,7 +459,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     } else if (!load_traps) {
         std::cout << "[+] --no-load ativado: pulando carregamento de armadilhas do disco.\n";
     } else {
-        uint64_t preloaded = load_traps_from_disk(shards, *trap_filter, range_start, range_end);
+        uint64_t preloaded = load_traps_from_disk(shards, *trap_filter, range_start, range_end, trap_dir);
         total_traps_in_ram.store(preloaded);
     }
 
