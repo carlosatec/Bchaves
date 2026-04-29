@@ -11,6 +11,7 @@ O **Bchaves** é uma ferramenta de busca de chaves privadas Bitcoin de ultra-alt
 - **Blindagem de Checkpoint v5**: Validação rigorosa de parâmetros (`-k`, `-R`) para evitar corrupção de progresso e garantir retomada atômica.
 - **Suporte Multi-Formato Full**: Busca simultânea de endereços `compress`, `uncompress` e `both` com pipeline de paridade corrigida.
 - **Filtro Cuckoo de Larga Escala**: Busca probabilística de alvos em O(1), agora dimensionado para gerenciar armadilhas de Kangaroo tanto em RAM quanto em Disco.
+- **Suporte Multi-Arquitetura**: Total compatibilidade com **processadores ARM modernos (ARM64)**, além de x86_64.
 - **Correção da Bijeção LCG**: O motor `hybrid` agora utiliza matemática pura sem hashing distorcivo, garantindo 100% de cobertura real e eliminando chaves duplicadas (Bug do Legado corrigido).
 
 ---
@@ -103,23 +104,25 @@ O parâmetro `-A` (Auto-Tune) ajusta automaticamente o número de threads e o ta
 | `balanced` | **(Padrão)** Todos os núcleos físicos. | Servidores compartilhados, equilíbrio térmica/speed. |
 | `max` | Todos os núcleos lógicos (HT). | Rigs dedicadas, máxima performance possível. |
 
+> **Nota:** Se você usar `-t <N>` junto com `-A`, o `-t` terá prioridade e sobrescreverá o número de threads do perfil. Use `-A` sozinho para controle automático ou `-t` para controle manual.
+
 ### Exemplos de Tuning por Módulo
 
 ```bash
 # [Address] Uso leve para não travar o PC (Notebook)
-./build/address target.txt -b 65 -R hybrid -A safe
+./build/address puzzles/65.txt -b 65 -R hybrid -k 4096 -A safe
 
-# [Address] Força total em servidor dedicado (HT ativo)
-./build/address target.txt -b 71 -R hybrid -A max
+# [Address] Força total em servidor dedicado (todos os cores lógicos)
+./build/address puzzles/71.txt -b 71 -R hybrid -k 8192 -A max
 
 # [Kangaroo] Busca de 75 bits com perfil equilibrado (Fisico 100%)
-./build/kangaroo targets.txt -b 75 -A balanced
+./build/kangaroo puzzles/75.txt -b 75 -A balanced
 
 # [BSGS] Busca em range de 40 bits usando perfil máximo
 ./build/bsgs pubkey.txt -b 40 -A max
 
-# Override manual: Perfil max, mas limitando a 8 threads explicitamente
-./build/address target.txt -b 71 -R hybrid -A max -t 8
+# Override manual: Perfil max (batch grande), mas limitando a 8 threads
+./build/address puzzles/71.txt -b 71 -R hybrid -k 4096 -A max -t 8
 ```
 
 ---
@@ -150,10 +153,10 @@ O motor utiliza multiplicadores de eficiência. Por exemplo, no modo `hybrid` co
 
 - **`-A <perfil>`**: Perfil de hardware (`safe`, `balanced`, `max`).
 - **`--secp256k1-backend <auto|portable>`**: Seleciona o kernel matemático.
-    - `auto`: Escolhe a versão mais rápida disponível (ex: otimizada para x86_64).
+    - `auto`: Escolhe a versão mais rápida disponível (ex: otimizada para x86_64 ou ARM64).
     - `portable`: Força o uso da implementação C puro (seguro para ambientes instáveis).
 - **`--no-endo`**: Desabilita a otimização de endomorfismo.
-- **Aceleração de Hardware**: Detecta suporte a AVX2 e BMI2. O caminho SHA-NI está desabilitado por segurança até validação completa.
+- **Aceleração de Hardware**: Detecta suporte a AVX2, BMI2 e extensões de criptografia ARM. O caminho SHA-NI está desabilitado por segurança até validação completa.
 - **`--list-hardware`**: Exibe as features detectadas da CPU e encerra.
 
 ---

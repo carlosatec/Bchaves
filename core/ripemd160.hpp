@@ -124,7 +124,9 @@ inline std::array<std::uint8_t, 20> ripemd160(const std::vector<std::uint8_t>& i
 }
 
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2")))
+#endif
 #endif
 inline void ripemd160_batch8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
 #if defined(__x86_64__) || defined(__i386__)

@@ -24,6 +24,14 @@
 #include <intrin.h>
 #elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #include <cpuid.h>
+#elif defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_ASIMD
+#define HWCAP_ASIMD (1 << 1)
+#endif
+#ifndef HWCAP_SHA2
+#define HWCAP_SHA2 (1 << 6)
+#endif
 #endif
 
 namespace bchaves::system {
@@ -78,6 +86,10 @@ std::uint32_t detect_cpu_features() {
         }
 #endif
     }
+#elif defined(__aarch64__) && defined(__linux__)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    if (hwcap & HWCAP_SHA2)    features |= cpu_sha_ni;  // Reutiliza a flag
+    if (hwcap & HWCAP_ASIMD)   features |= cpu_avx2;    // NEON presente
 #endif
     return features;
 }
@@ -120,7 +132,12 @@ HardwareInfo detect_hardware() {
     HardwareInfo info;
     const unsigned int logical = std::thread::hardware_concurrency();
     info.num_cores = logical == 0 ? 1u : logical;
+#if defined(__aarch64__)
+    // ARM não tem HyperThreading; cada core reportado é físico
+    info.num_physical_cores = info.num_cores;
+#else
     info.num_physical_cores = std::max(1u, info.num_cores / 2u);
+#endif
     info.ram_total = detect_total_ram();
     info.ram_available = detect_available_ram();
     info.features = detect_cpu_features();

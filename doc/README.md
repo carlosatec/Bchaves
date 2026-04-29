@@ -27,5 +27,5 @@ O Bchaves é estruturado para separar **Primitivos Matemáticos** de **Estratég
 
 - **Linguagem:** C++17
 - **Build System:** Makefile
-- **Performance:** Multi-threading, SIMD (AVX2), Auto-Tune
+- **Performance:** Multi-threading, SIMD (AVX2), ARM64, Auto-Tune
 - **Checkpoint:** Versão 5 (Resumível e Atômica)

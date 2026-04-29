@@ -7,7 +7,13 @@
 # License:    MIT (c) 2026
 
 CXX ?= g++
-CXXFLAGS = -std=c++17 -O3 -flto -march=native -Wall -Wextra
+CXXFLAGS = -std=c++17 -O3 -flto -Wall -Wextra
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),aarch64)
+  CXXFLAGS += -march=armv8.2-a+crypto
+else
+  CXXFLAGS += -march=native
+endif
 ROOT := $(shell pwd)
 BUILD_DIR := $(ROOT)/build
 

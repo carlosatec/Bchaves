@@ -36,6 +36,8 @@ O Bchaves introduz o **Auto-Tune**, que configura o motor conforme o perfil de u
 - **`-A balanced`**: (Padrão) Usa 100% dos núcleos físicos. Ideal para servidores compartilhados.
 - **`-A max`**: Força bruta. Ativa Hyper-Threading (núcleos lógicos) e lotes massivos de memória para extrair o máximo de MH/s.
 
+> **Nota:** O parâmetro `-t <N>` sempre tem prioridade sobre `-A`. Se ambos forem usados, o `-A` definirá apenas o tamanho dos lotes (batch), enquanto `-t` controlará o número exato de threads.
+
 ---
 
 ## 🖥️ Verificando seu Hardware
@@ -44,7 +46,7 @@ O Bchaves permite validar se as otimizações de CPU estão ativas:
 ```bash
 ./build/address --list-hardware
 ```
-Exibe cores térmicos, RAM livre e extensões **AVX2 / SHA-NI / BMI2**.
+Exibe cores térmicos, RAM livre e extensões **AVX2 / SHA-NI / BMI2 / ARM Crypto**.
 
 ## 🚀 Kangaroo Simplificado com Bits
 

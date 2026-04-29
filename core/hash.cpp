@@ -105,7 +105,9 @@ std::array<std::uint8_t, 32> Sha256::finalize() {
 }
 
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("sha,sse4.1")))
+#endif
 #endif
 void transform_shani(std::uint32_t* state, const std::uint8_t* data) {
 #if defined(__x86_64__) || defined(__i386__)
@@ -212,7 +214,9 @@ void Sha256::transform_portable() {
 }
 
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2")))
+#endif
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
 #if defined(__x86_64__) || defined(__i386__)
