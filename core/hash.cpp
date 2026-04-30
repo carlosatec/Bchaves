@@ -111,7 +111,8 @@ __attribute__((target("sha,sse4.1")))
 #endif
 void transform_shani(std::uint32_t* state, const std::uint8_t* data) {
 #if defined(__x86_64__) || defined(__i386__)
-    __m128i msg0, msg1, msg2, msg3;
+    __m128i msg0, msg1, msg3;
+    [[maybe_unused]] __m128i msg2;
     __m128i state0, state1; // state0 = ABEF, state1 = CDGH
     __m128i msg_sum;
 
@@ -213,14 +214,14 @@ void Sha256::transform_portable() {
     state_[7] += h;
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#if defined(__x86_64__) || defined(__i386__)
-__attribute__((target("avx2")))
-#endif
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#pragma GCC push_options
+#pragma GCC target("avx2")
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
 #if defined(__x86_64__) || defined(__i386__)
-    if (length == 33 || length == 65) {
+    static const bool has_avx2 = supports_avx2();
+    if (has_avx2 && (length == 33 || length == 65)) {
         const __m256i bswap_mask = _mm256_set_epi8(
             12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
             12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
@@ -368,5 +369,8 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
         }
     }
 }
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#pragma GCC pop_options
+#endif
 
 } // namespace bchaves::core

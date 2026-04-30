@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <vector>
 #include <cstring>
+#include "system/hardware.hpp"
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -130,7 +131,8 @@ __attribute__((target("avx2")))
 #endif
 inline void ripemd160_batch8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
 #if defined(__x86_64__) || defined(__i386__)
-    if (length == 32) {
+    static const bool has_avx2 = (bchaves::system::detect_hardware().features & bchaves::system::cpu_avx2) != 0;
+    if (has_avx2 && length == 32) {
         alignas(32) std::uint32_t X[16][8];
         for (int i = 0; i < 8; ++i) {
             const std::uint32_t* p = (const std::uint32_t*)data[i];
