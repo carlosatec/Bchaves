@@ -523,7 +523,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
             bchaves::system::default_checkpoint_path("address-hybrid", options.bits));
     };
     bchaves::system::CheckpointState checkpoint{};
-    checkpoint.algorithm = "address";
+    checkpoint.algorithm = (options.mode == bchaves::system::SearchMode::hybrid) ? "address-hybrid" : "address-sequential";
     checkpoint.range_start = bchaves::core::to_bytes32(start);
     checkpoint.range_end = bchaves::core::to_bytes32(end);
     checkpoint.mode = options.mode;
@@ -561,10 +561,13 @@ int run_address(const bchaves::system::AddressOptions& options) {
                         if (g_chunk_step == 0 || gcd64(g_chunk_step, g_hybrid_total_chunks) != 1)
                             g_chunk_step = find_coprime_step(g_hybrid_total_chunks);
                         g_chunk_counter.store(checkpoint.hybrid_chunk_counter);
+                        total_processed = checkpoint.progress_primary;
+                        total_checks_processed = checkpoint.progress_secondary;
                         resuming = true;
                         std::cout << "[+] Checkpoint detectado. Retomando progresso...\n";
                         std::cout << "    Progresso: " << checkpoint.hybrid_chunk_counter
-                                  << " / " << g_hybrid_total_chunks << " chunks\n";
+                                  << " / " << g_hybrid_total_chunks << " chunks ("
+                                  << bchaves::system::format_key_count((double)total_processed.load()) << " chaves)\n";
                     } else {
                         std::cerr << "\n[!] ERRO CRÍTICO DE CHECKPOINT [!]\n";
                         std::cerr << "O arquivo de checkpoint existente foi criado com parâmetros incompatíveis.\n";
@@ -808,10 +811,14 @@ int run_address(const bchaves::system::AddressOptions& options) {
                 checkpoint.hybrid_chunk_step = g_chunk_step;
                 checkpoint.hybrid_chunk_size = g_hybrid_chunk_size;
                 checkpoint.hybrid_total_chunks = g_hybrid_total_chunks;
+                checkpoint.progress_primary = total_processed.load();
+                checkpoint.progress_secondary = total_checks_processed.load();
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
                 const auto ckp_path = hybrid_checkpoint_path();
-                bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
+                if (bchaves::system::save_checkpoint(ckp_path, checkpoint, err)) {
+                    // Silencioso no loop
+                }
             } else {
                 checkpoint.algorithm = "address-sequential";
                 checkpoint.progress_primary = total_processed.load();
@@ -842,15 +849,20 @@ int run_address(const bchaves::system::AddressOptions& options) {
         if (checkpoint_enabled) {
             if (options.mode == bchaves::system::SearchMode::hybrid) {
                 const uint64_t done = g_chunk_counter.load();
-                checkpoint.algorithm = "address-hybrid";
                 checkpoint.hybrid_chunk_counter = (done >= num_threads) ? (done - num_threads) : 0;
                 checkpoint.hybrid_chunk_step = g_chunk_step;
                 checkpoint.hybrid_chunk_size = g_hybrid_chunk_size;
                 checkpoint.hybrid_total_chunks = g_hybrid_total_chunks;
+                checkpoint.progress_primary = total_processed.load();
+                checkpoint.progress_secondary = total_checks_processed.load();
                 checkpoint.timestamp = static_cast<uint64_t>(std::time(nullptr));
                 std::string err;
                 const auto ckp_path = hybrid_checkpoint_path();
-                bchaves::system::save_checkpoint(ckp_path, checkpoint, err);
+                if (bchaves::system::save_checkpoint(ckp_path, checkpoint, err)) {
+                    std::cout << "[+] Checkpoint de emergência salvo com sucesso.\n";
+                } else {
+                    std::cerr << "[E] Falha ao salvar checkpoint de emergência: " << err << "\n";
+                }
             } else {
                 checkpoint.algorithm = "address-sequential";
                 checkpoint.progress_primary = total_processed.load();

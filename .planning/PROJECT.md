@@ -23,5 +23,5 @@ Bchaves is an ultra-high performance Bitcoin private key search engine, optimize
 - **`bsgs`**: Baby-Step Giant-Step engine.
 
 ## 📍 Project Status
-- **Current Goal**: Stabilizing the Secp256k1 arithmetic kernel and fixing Kangaroo point deserialization.
-- **Next Milestone**: Milestone 1: Core Stability and Multi-Arch Benchmarking.
+- **Current Goal**: Final benchmarking and CLI documentation polish after persistence engine stabilization.
+- **Next Milestone**: Milestone 2: Multi-Arch Production Release.
