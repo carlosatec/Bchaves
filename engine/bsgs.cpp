@@ -25,10 +25,14 @@
 #include <fstream>
 #include <limits>
 #include <unordered_map>
+#include <csignal>
 
 namespace bchaves::engine {
 
 namespace {
+
+volatile std::sig_atomic_t g_interrupt_requested = 0;
+void handle_signal(int) { g_interrupt_requested = 1; }
 
 bool ceil_div_bigint_u64_to_u64(const bchaves::core::BigInt& num,
                                 std::uint64_t denom,
@@ -102,6 +106,8 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
         std::cerr << "[E] Falha ao configurar secp256k1: " << backend_error << '\n';
         return 1;
     }
+    
+    std::signal(SIGINT, handle_signal);
     
     uint32_t bits = options.bits;
     uint64_t num_baby_steps = 0;
@@ -244,7 +250,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
         uint64_t batch_j[kGiantBatch];
 
         uint64_t j = tid + checkpoint.progress_primary;
-        while (!found.load(std::memory_order_relaxed)) {
+        while (!found.load(std::memory_order_relaxed) && !g_interrupt_requested) {
             std::size_t batch_count = 0;
             for (; batch_count < kGiantBatch && j < max_giant_steps; ++batch_count) {
                 batch_gj[batch_count] = current_giant_jac;
@@ -312,7 +318,7 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
     }
 
     auto last_checkpoint = std::chrono::steady_clock::now();
-    while (!found.load() && active_workers.load(std::memory_order_relaxed) > 0) {
+    while (!found.load() && active_workers.load(std::memory_order_relaxed) > 0 && !g_interrupt_requested) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         auto now = std::chrono::steady_clock::now();
         std::cout << "\r[*] Giant Steps: " << giant_count.load() + checkpoint.progress_primary << std::flush;
@@ -345,8 +351,24 @@ int run_bsgs(const bchaves::system::BsgsOptions& options) {
                 "BSGS Search (bits:" + std::to_string(options.bits) + ")",
                 !options.benchmark);
         }
+    } else if (g_interrupt_requested) {
+        std::cout << "\n[!] Interrompido pelo usuário. Salvando estado final...\n";
+        if (options.checkpoint_enabled && !options.benchmark) {
+            bchaves::system::CheckpointState ckp;
+            ckp.algorithm = "bsgs";
+            ckp.progress_secondary = options.bits;
+            ckp.current = bchaves::core::to_bytes32(step_size);
+            ckp.progress_primary = giant_count.load() + checkpoint.progress_primary;
+            ckp.timestamp = static_cast<uint64_t>(std::time(nullptr));
+            std::string err;
+            if (bchaves::system::save_checkpoint(checkpoint_path, ckp, err)) {
+                std::cout << "[+] Checkpoint de emergência salvo com sucesso.\n";
+            } else {
+                std::cerr << "[E] Falha ao salvar checkpoint: " << err << "\n";
+            }
+        }
     } else {
-        std::cout << "[!] Exhausted: alvo nao encontrado no range solicitado.\n";
+        std::cout << "\n[!] Exhausted: alvo nao encontrado no range solicitado.\n";
     }
 
     return 0;
