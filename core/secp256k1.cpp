@@ -374,43 +374,48 @@ BigInt mod_sub(const BigInt& a, const BigInt& b, const BigInt& p) {
 void reduce_p256_64(std::uint64_t* res, const std::uint64_t* wide) {
     // P = 2^256 - 2^32 - 977 => 2^256 = 2^32 + 977
     // Wide = [L0, L1, L2, L3, H0, H1, H2, H3]
-    // Result = L + H * (2^32 + 977)
     
     unsigned __int128 carry = 0;
-    std::uint64_t h[4] = {wide[4], wide[5], wide[6], wide[7]};
+    const std::uint64_t* l = wide;
+    const std::uint64_t* h = wide + 4;
     
     // Step 1: res = L + H * 977
     for (int i = 0; i < 4; ++i) {
-        carry += (unsigned __int128)h[i] * 977 + wide[i];
+        carry += (unsigned __int128)h[i] * 977 + l[i];
         res[i] = (std::uint64_t)carry;
         carry >>= 64;
     }
     
-    // Step 2: res = res + (H << 32)
-    unsigned __int128 c = carry;
-    for(int i=0; i<4; ++i) {
-        uint64_t term = (h[i] << 32);
-        if (i > 0) term |= (h[i-1] >> 32);
+    // Step 2: Add H * 2^32
+    // The carry from Step 1 represents carry * 2^256 = carry * (2^32 + 977)
+    unsigned __int128 c = (unsigned __int128)carry * 977;
+    for (int i = 0; i < 4; ++i) {
+        unsigned __int128 term = (unsigned __int128)h[i] << 32;
+        if (i > 0) term |= (unsigned __int128)h[i-1] >> 32;
         
-        c += (unsigned __int128)res[i] + term;
-        res[i] = (uint64_t)c;
-        c >>= 64;
+        // Add the carry-over from Step 1 correctly
+        if (i == 0) term += c;
+        if (i == 0) term += (unsigned __int128)carry << 32;
+        if (i == 1) term += (unsigned __int128)carry >> 32;
+
+        unsigned __int128 acc = (unsigned __int128)res[i] + term;
+        res[i] = (std::uint64_t)acc;
+        c = acc >> 64;
     }
     
-    // Step 3: ripple high bits (H << 32 high part and carry)
-    uint64_t ripple = (h[3] >> 32) + (uint64_t)c;
-    if (ripple > 0) {
-        unsigned __int128 c2 = 0;
-        uint64_t extra = ripple * 977;
-        for(int i=0; i<4; ++i) {
-            uint64_t term = (i == 0) ? (extra) : 0;
-            // ripple << 32
-            if (i == 0) term += (ripple << 32);
-            if (i == 1) term += (ripple >> 32);
+    // Step 3: Final ripple for bits above 256
+    // high bits = (h[3] >> 32) + c
+    uint64_t r = (h[3] >> 32) + (std::uint64_t)c;
+    if (r > 0) {
+        unsigned __int128 c2 = (unsigned __int128)r * 977;
+        for (int i = 0; i < 4; ++i) {
+            unsigned __int128 t = (i == 0) ? c2 : 0;
+            if (i == 0) t += (unsigned __int128)r << 32;
+            if (i == 1) t += (unsigned __int128)r >> 32;
             
-            c2 += (unsigned __int128)res[i] + term;
-            res[i] = (uint64_t)c2;
-            c2 >>= 64;
+            unsigned __int128 acc = (unsigned __int128)res[i] + t;
+            res[i] = (std::uint64_t)acc;
+            c2 = acc >> 64;
         }
     }
 }
@@ -846,41 +851,54 @@ std::string to_lower(const std::string& text) {
 
 Secp256k1Point deserialize_pubkey(const std::uint8_t* data, std::size_t length) {
     if (length == 0) return {};
+    
+    // Helper to load 32-byte BE into BigInt
+    auto load_be = [](const uint8_t* src) {
+        BigInt out;
+        for (int i = 0; i < 4; ++i) {
+            uint64_t limb = 0;
+            for (int j = 0; j < 8; ++j) {
+                limb = (limb << 8) | src[i * 8 + j];
+            }
+            out.limbs[3 - i] = limb;
+        }
+        return out;
+    };
+
     if (data[0] == 0x04 && length == 65) {
         Secp256k1Point p;
+        p.x = load_be(data + 1);
+        p.y = load_be(data + 33);
         p.infinity = false;
-        std::vector<uint8_t> x_v(data + 1, data + 33);
-        std::vector<uint8_t> y_v(data + 33, data + 65);
-        if (!parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x) ||
-            !parse_big_int(bchaves::core::to_hex(y_v).c_str(), p.y) ||
-            !is_point_on_curve(p.x, p.y)) {
+        if (p.x >= kFieldPrime || p.y >= kFieldPrime || !is_point_on_curve(p.x, p.y)) {
             return {};
         }
         return p;
     }
+    
     if ((data[0] == 0x02 || data[0] == 0x03) && length == 33) {
         Secp256k1Point p;
+        p.x = load_be(data + 1);
         p.infinity = false;
-        std::vector<uint8_t> x_v(data + 1, data + 33);
-        if (!parse_big_int(bchaves::core::to_hex(x_v).c_str(), p.x) || p.x >= kFieldPrime) {
-            return {};
-        }
+        if (p.x >= kFieldPrime) return {};
 
-        const BigInt rhs = mod_add(mod_mul_k1(mod_square_k1(p.x), p.x), BigInt(7), kFieldPrime);
-        const BigInt sqrt_exp = (kFieldPrime + BigInt(1)) >> 2;
+        // y^2 = x^3 + 7
+        const BigInt x3 = mod_mul_k1(mod_square_k1(p.x), p.x);
+        const BigInt rhs = mod_add(x3, BigInt(7), kFieldPrime);
+        
+        // Tonelli-Shanks for P = 3 mod 4: sqrt(a) = a^((P+1)/4)
+        const BigInt sqrt_exp = parse_hex("3fffffffffffffffffffffffffffffffffffffffffffffffffffffffbfffff0c");
         BigInt y = mod_pow_k1(rhs, sqrt_exp);
+        
         if (mod_square_k1(y) != rhs) {
             return {};
         }
 
-        const bool expected_odd = data[0] == 0x03;
+        const bool expected_odd = (data[0] == 0x03);
         if (y.is_odd() != expected_odd) {
             y = mod_sub(kFieldPrime, y, kFieldPrime);
         }
-        if (!is_point_on_curve(p.x, y)) {
-            return {};
-        }
-
+        
         p.y = y;
         return p; 
     }
@@ -980,11 +998,17 @@ bool parse_big_int(const std::string& text, BigInt& out) {
         base = 16;
         value = value.substr(2);
     } else {
-        bool has_hex = false;
-        for (char ch : value) {
-            if ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) { has_hex = true; break; }
+        // Heuristic: If it looks like a hex string (even without 0x prefix), treat as hex.
+        // For addresses and keys, we often get hex strings without prefix.
+        if (value.size() >= 32) {
+             base = 16;
+        } else {
+            bool has_hex = false;
+            for (char ch : value) {
+                if ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) { has_hex = true; break; }
+            }
+            if (has_hex) base = 16;
         }
-        if (has_hex) base = 16;
     }
 
     out = {};
@@ -996,7 +1020,6 @@ bool parse_big_int(const std::string& text, BigInt& out) {
         else return false;
         if (digit >= static_cast<std::uint64_t>(base)) return false;
         
-        // mul_small_in_place(out, base)
         unsigned __int128 carry = digit;
         for (int i = 0; i < 4; ++i) {
             carry += (unsigned __int128)out.limbs[i] * base;
