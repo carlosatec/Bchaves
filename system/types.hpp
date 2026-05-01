@@ -55,11 +55,16 @@ enum class Secp256k1BackendPreference {
 
 enum CPUFeature : std::uint32_t {
     cpu_none = 0,
-    cpu_sse4 = 1u << 0u,
-    cpu_avx2 = 1u << 1u,
-    cpu_avx512 = 1u << 2u,
-    cpu_sha_ni = 1u << 3u,
-    cpu_bmi2 = 1u << 4u,
+    cpu_ssse3 = 1u << 0u,
+    cpu_sse4 = 1u << 1u,
+    cpu_avx = 1u << 2u,
+    cpu_avx2 = 1u << 3u,
+    cpu_avx512 = 1u << 4u,
+    cpu_sha_ni = 1u << 5u,
+    cpu_bmi2 = 1u << 6u,
+    cpu_neon = 1u << 7u,
+    cpu_aes = 1u << 8u,
+    cpu_pmull = 1u << 9u,
 };
 
 struct TargetEntry {
@@ -80,15 +85,23 @@ struct TargetLoadResult {
 };
 
 struct HardwareInfo {
+    std::string cpu_vendor;       // "GenuineIntel", "AuthenticAMD", "ARM"
+    std::string cpu_family;       // "Core i7", "Ryzen 7", "Cortex-A78"
+    std::string cpu_model;      // "9700K", "5800X3D", "A78"
     std::uint32_t num_cores = 1;
     std::uint32_t num_physical_cores = 1;
+    std::uint32_t num_logical_cores = 1;
+    bool is_smt_enabled = false;
     std::uint64_t ram_total = 0;
     std::uint64_t ram_available = 0;
     std::uint32_t l1_cache = 0;
     std::uint32_t l2_cache = 0;
     std::uint32_t l3_cache = 0;
     std::uint32_t features = cpu_none;
+    std::uint32_t memory_channels = 0;
+    std::uint32_t memory_gen = 0;       // DDR4=4, DDR5=5
     bool is_numa = false;
+    std::string isa_level;       // "SSSE3", "SSE4", "AVX", "AVX2", "AVX512", "NEON"
 };
 
 struct TuneProfile {
