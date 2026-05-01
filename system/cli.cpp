@@ -10,9 +10,11 @@
 #include "system/cli.hpp"
 
 #include "core/hash.hpp"
+#include "system/hardware.hpp"
 
 #include <iostream>
 #include <stdexcept>
+#include <iomanip>
 
 namespace bchaves::system {
 namespace {
@@ -76,8 +78,48 @@ void parse_common_flag(const std::string& arg, int argc, char** argv, int& index
     } else if (arg == "--secp256k1-backend") {
         options.secp256k1_backend = parse_secp256k1_backend(require_value(argc, argv, index, arg));
     } else if (arg == "--list-hardware") {
-        std::cout << "[*] Comando list-hardware detectado...\n";
-        options.help = true; // Força parada após exibir info
+        HardwareInfo hw = detect_hardware();
+        
+        std::cout << "\n[*] Hardware Report:\n";
+        std::cout << "    CPU: " << hw.cpu_vendor << " " << hw.cpu_family << " " << hw.cpu_model << "\n";
+        std::cout << "    Cores: " << hw.num_cores << " (Physical: " << hw.num_physical_cores;
+        std::cout << ", Logical: " << hw.num_logical_cores << ", SMT: " << (hw.is_smt_enabled ? "Yes" : "No") << ")\n";
+        std::cout << "    Cache: L1d=" << (hw.l1_cache / 1024) << "KB, L2=" << (hw.l2_cache / 1024) << "KB";
+        std::cout << ", L3=" << (hw.l3_cache / (1024*1024)) << "MB\n";
+        
+        std::uint64_t ram_gb = hw.ram_total / (1024 * 1024 * 1024);
+        std::cout << "    Memory: " << ram_gb << "GB DDR" << hw.memory_gen;
+        std::cout << " (Channels: " << hw.memory_channels << ")\n";
+        std::cout << "    Features: " << hw.isa_level;
+        if (hw.features & cpu_ssse3) std::cout << ", SSSE3";
+        if (hw.features & cpu_sse4) std::cout << ", SSE4";
+        if (hw.features & cpu_avx) std::cout << ", AVX";
+        if (hw.features & cpu_avx2) std::cout << ", AVX2";
+        if (hw.features & cpu_avx512) std::cout << ", AVX512";
+        if (hw.features & cpu_sha_ni) std::cout << ", SHA-NI";
+        if (hw.features & cpu_bmi2) std::cout << ", BMI2";
+        if (hw.features & cpu_neon) std::cout << ", NEON";
+        std::cout << "\n";
+        
+        std::cout << "    ISA Level: " << hw.isa_level << " (" << hw.isa_level << "-bit)\n";
+        std::cout << "    NUMA: " << (hw.is_numa ? "Enabled" : "Disabled") << "\n";
+        
+        // Show recommended tuning
+        TuneProfile tune = tune_for(hw, AutoTuneProfile::balanced, 0, 0);
+        std::cout << "    Recommended Tuning (balanced):\n";
+        std::cout << "      Threads: " << tune.threads << ", Batch: " << tune.batch_size;
+        std::cout << ", Table: " << tune.table_k << "M\n";
+        
+        if (hw.isa_level != "None" && hw.isa_level != "Portable") {
+            std::cout << "    [Using " << hw.isa_level << " optimized SHA256";
+            if (hw.isa_level == "AVX2" || hw.isa_level == "AVX512") {
+                std::cout << ", " << hw.isa_level << " secp256k1";
+            }
+            std::cout << "]\n";
+        }
+        
+        std::cout << "\n";
+        options.help = true; // Force stop after displaying info
     } else if (arg == "-h" || arg == "--help") {
         options.help = true;
     } else {
@@ -226,6 +268,7 @@ std::string address_help() {
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
+           "  --list-hardware exibe informacoes da CPU e encerra\n"
            "  --benchmark   sem checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
@@ -239,6 +282,7 @@ std::string bsgs_help() {
            "  -l <tipo>      compress|uncompress|both\n"
            "  -t <n>         numero de threads\n"
            "  -A <perfil>    safe|balanced|max\n"
+           "  --list-hardware exibe informacoes da CPU e encerra\n"
            "  --benchmark    executa sem gravar checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"

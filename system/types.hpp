@@ -119,6 +119,7 @@ struct CommonOptions {
     Secp256k1BackendPreference secp256k1_backend = Secp256k1BackendPreference::auto_select;
     bool checkpoint_enabled = true;
     bool benchmark = false;
+    bool verbose = false;
     bool help = false;
 };
 
