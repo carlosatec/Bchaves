@@ -31,8 +31,13 @@ namespace bchaves::engine {
 
 namespace {
 
+// Signal handler - static linkage for safety, volatile sig_atomic_t for thread-safety
+// NOLINTNEXTLINE(cert-err33-c) - signal() result intentionally ignored for portability
 volatile std::sig_atomic_t g_interrupt_requested = 0;
-void handle_signal(int) { g_interrupt_requested = 1; }
+
+static void handle_signal(int) noexcept {
+    g_interrupt_requested = 1;
+}
 
 bool ceil_div_bigint_u64_to_u64(const bchaves::core::BigInt& num,
                                 std::uint64_t denom,

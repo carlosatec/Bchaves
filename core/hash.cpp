@@ -13,8 +13,6 @@
 #include "core/hash.hpp"
 #include "system/hardware.hpp"
 
-#include <iostream>
-
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #include <x86intrin.h>
@@ -23,11 +21,23 @@
 namespace bchaves::core {
 
 namespace {
+// Constants for SHA-256
+static constexpr std::size_t kBlockSize = 64u;
+static constexpr std::size_t kHashSize = 32u;
+
+// SHA-256 Initial Hash Values (from FIPS 180-4)
+static constexpr std::uint32_t kInitialHash[8] = {
+    0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+    0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+};
+
 bool g_use_shani = false;
 std::once_flag g_dispatch_once;
 
 void init_dispatch() {
     std::call_once(g_dispatch_once, []() {
+        // TODO: Implementacao SHA-NI incompleta - falta completar o loop
+        // de 64 rodadas (atualmente apenas 4 iteracoes sao executadas).
         // O backend SHA-NI ainda nao implementa a rodada completa nem a
         // acumulacao final do estado. Mantemos o despacho desabilitado
         // ate que a versao intrinseca seja corrigida e validada.
@@ -54,7 +64,7 @@ std::uint32_t Sha256::rotate_right(std::uint32_t value, std::uint32_t bits) {
 void Sha256::update(const std::uint8_t* data, std::size_t length) {
     for (std::size_t i = 0; i < length; ++i) {
         buffer_[data_length_++] = data[i];
-        if (data_length_ == 64) {
+        if (data_length_ == kBlockSize) {
             transform();
             bit_length_ += 512;
             data_length_ = 0;
@@ -68,14 +78,15 @@ void Sha256::update(const ByteVector& data) {
 
 std::array<std::uint8_t, 32> Sha256::finalize() {
     std::size_t i = data_length_;
-    if (data_length_ < 56) {
+    constexpr std::size_t kPaddingStart = 56;
+    if (data_length_ < kPaddingStart) {
         buffer_[i++] = 0x80;
-        while (i < 56) {
+        while (i < kPaddingStart) {
             buffer_[i++] = 0x00;
         }
     } else {
         buffer_[i++] = 0x80;
-        while (i < 64) {
+        while (i < kBlockSize) {
             buffer_[i++] = 0x00;
         }
         transform();
@@ -83,23 +94,19 @@ std::array<std::uint8_t, 32> Sha256::finalize() {
     }
 
     bit_length_ += static_cast<std::uint64_t>(data_length_) * 8u;
-    buffer_[63] = static_cast<std::uint8_t>(bit_length_);
-    buffer_[62] = static_cast<std::uint8_t>(bit_length_ >> 8u);
-    buffer_[61] = static_cast<std::uint8_t>(bit_length_ >> 16u);
-    buffer_[60] = static_cast<std::uint8_t>(bit_length_ >> 24u);
-    buffer_[59] = static_cast<std::uint8_t>(bit_length_ >> 32u);
-    buffer_[58] = static_cast<std::uint8_t>(bit_length_ >> 40u);
-    buffer_[57] = static_cast<std::uint8_t>(bit_length_ >> 48u);
-    buffer_[56] = static_cast<std::uint8_t>(bit_length_ >> 56u);
+    // Write bit length in big-endian format at the end of the block
+    for (int b = 0; b < 8; ++b) {
+        buffer_[kBlockSize - 1 - b] = static_cast<std::uint8_t>(bit_length_ >> (b * 8u));
+    }
     transform();
 
-    std::array<std::uint8_t, 32> hash{};
+    std::array<std::uint8_t, kHashSize> hash{};
     for (int w = 0; w < 8; ++w) {
         std::uint32_t s = state_[w];
-        hash[w * 4 + 0] = static_cast<std::uint8_t>((s >> 24u) & 0xffu);
-        hash[w * 4 + 1] = static_cast<std::uint8_t>((s >> 16u) & 0xffu);
-        hash[w * 4 + 2] = static_cast<std::uint8_t>((s >> 8u) & 0xffu);
-        hash[w * 4 + 3] = static_cast<std::uint8_t>(s & 0xffu);
+        hash[static_cast<std::size_t>(w) * 4 + 0] = static_cast<std::uint8_t>((s >> 24u) & 0xffu);
+        hash[static_cast<std::size_t>(w) * 4 + 1] = static_cast<std::uint8_t>((s >> 16u) & 0xffu);
+        hash[static_cast<std::size_t>(w) * 4 + 2] = static_cast<std::uint8_t>((s >> 8u) & 0xffu);
+        hash[static_cast<std::size_t>(w) * 4 + 3] = static_cast<std::uint8_t>(s & 0xffu);
     }
     return hash;
 }
@@ -219,6 +226,16 @@ void Sha256::transform_portable() {
 #pragma GCC target("sse4.1")
 #endif
 void Sha256::hash4(const std::uint8_t* const data[4], std::size_t length, std::uint8_t* const out[4]) {
+    // Validate inputs to prevent buffer issues
+    if (!data || !out) {
+        return;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if ((data[i] && !out[i]) || (!data[i] && out[i])) {
+            return;  // Mismatched null pointers
+        }
+    }
+
 #if defined(__x86_64__) || defined(__i386__)
     if (length == 33 || length == 65) {
         const __m128i bswap_mask = _mm_set_epi8(
@@ -269,16 +286,23 @@ void Sha256::hash4(const std::uint8_t* const data[4], std::size_t length, std::u
         };
 
         __m128i state[8] = {
-            _mm_set1_epi32(0x6a09e667u), _mm_set1_epi32(0xbb67ae85u), _mm_set1_epi32(0x3c6ef372u), _mm_set1_epi32(0xa54ff53au),
-            _mm_set1_epi32(0x510e527fu), _mm_set1_epi32(0x9b05688cu), _mm_set1_epi32(0x1f83d9abu), _mm_set1_epi32(0x5be0cd19u),
+            _mm_set1_epi32(kInitialHash[0]), _mm_set1_epi32(kInitialHash[1]),
+            _mm_set1_epi32(kInitialHash[2]), _mm_set1_epi32(kInitialHash[3]),
+            _mm_set1_epi32(kInitialHash[4]), _mm_set1_epi32(kInitialHash[5]),
+            _mm_set1_epi32(kInitialHash[6]), _mm_set1_epi32(kInitialHash[7])
         };
+
+        // Single block: 256 bits message + 1 bit padding (33 bytes) -> 264 bits
+        // Two blocks: 512 bits message + 1 bit padding (65 bytes) -> 520 bits
+        static constexpr std::uint32_t kSingleBlockBits = 264u;
+        static constexpr std::uint32_t kDoubleBlockBits = 520u;
 
         if (length == 33) {
             for (int i = 0; i < 8; ++i) W[i] = _mm_shuffle_epi8(LOAD_W4(i), bswap_mask);
             W[8] = _mm_set_epi32(((uint32_t)data[3][32]<<24)|0x800000, ((uint32_t)data[2][32]<<24)|0x800000,
                                  ((uint32_t)data[1][32]<<24)|0x800000, ((uint32_t)data[0][32]<<24)|0x800000);
             for (int i = 9; i < 15; ++i) W[i] = zero;
-            W[15] = _mm_set1_epi32(264);
+            W[15] = _mm_set1_epi32(kSingleBlockBits);
             expand_schedule4(); run_block4(state);
         } else {
             for (int i = 0; i < 16; ++i) W[i] = _mm_shuffle_epi8(LOAD_W4(i), bswap_mask);
@@ -286,7 +310,7 @@ void Sha256::hash4(const std::uint8_t* const data[4], std::size_t length, std::u
             W[0] = _mm_set_epi32(((uint32_t)data[3][64]<<24)|0x800000, ((uint32_t)data[2][64]<<24)|0x800000,
                                  ((uint32_t)data[1][64]<<24)|0x800000, ((uint32_t)data[0][64]<<24)|0x800000);
             for (int i = 1; i < 15; ++i) W[i] = zero;
-            W[15] = _mm_set1_epi32(520);
+            W[15] = _mm_set1_epi32(kDoubleBlockBits);
             expand_schedule4(); run_block4(state);
         }
 
@@ -312,6 +336,16 @@ void Sha256::hash4(const std::uint8_t* const data[4], std::size_t length, std::u
 #pragma GCC target("avx2")
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
+    // Validate inputs to prevent buffer issues
+    if (!data || !out) {
+        return;
+    }
+    for (int i = 0; i < 8; ++i) {
+        if ((data[i] && !out[i]) || (!data[i] && out[i])) {
+            return;  // Mismatched null pointers
+        }
+    }
+
 #if defined(__x86_64__) || defined(__i386__)
     static const bool has_avx2 = supports_avx2();
     if (has_avx2 && (length == 33 || length == 65)) {
@@ -391,15 +425,20 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
         };
 
         __m256i state[8] = {
-            _mm256_set1_epi32(0x6a09e667u),
-            _mm256_set1_epi32(0xbb67ae85u),
-            _mm256_set1_epi32(0x3c6ef372u),
-            _mm256_set1_epi32(0xa54ff53au),
-            _mm256_set1_epi32(0x510e527fu),
-            _mm256_set1_epi32(0x9b05688cu),
-            _mm256_set1_epi32(0x1f83d9abu),
-            _mm256_set1_epi32(0x5be0cd19u),
+            _mm256_set1_epi32(kInitialHash[0]),
+            _mm256_set1_epi32(kInitialHash[1]),
+            _mm256_set1_epi32(kInitialHash[2]),
+            _mm256_set1_epi32(kInitialHash[3]),
+            _mm256_set1_epi32(kInitialHash[4]),
+            _mm256_set1_epi32(kInitialHash[5]),
+            _mm256_set1_epi32(kInitialHash[6]),
+            _mm256_set1_epi32(kInitialHash[7]),
         };
+
+        // Single block: 256 bits message + 1 bit padding (33 bytes) -> 264 bits
+        // Two blocks: 512 bits message + 1 bit padding (65 bytes) -> 520 bits
+        static constexpr std::uint32_t kSingleBlockBits = 264u;
+        static constexpr std::uint32_t kDoubleBlockBits = 520u;
 
         if (length == 33) {
             for (int i = 0; i < 8; ++i) {
@@ -412,7 +451,7 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
                 ((std::uint32_t)data[1][32] << 24) | 0x00800000u, ((std::uint32_t)data[0][32] << 24) | 0x00800000u
             );
             for (int i = 9; i < 15; ++i) W[i] = zero;
-            W[15] = _mm256_set1_epi32(264);
+            W[15] = _mm256_set1_epi32(kSingleBlockBits);
             expand_schedule();
             run_block(state);
         } else {
@@ -429,7 +468,7 @@ void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::u
                 ((std::uint32_t)data[1][64] << 24) | 0x00800000u, ((std::uint32_t)data[0][64] << 24) | 0x00800000u
             );
             for (int i = 1; i < 15; ++i) W[i] = zero;
-            W[15] = _mm256_set1_epi32(520);
+            W[15] = _mm256_set1_epi32(kDoubleBlockBits);
             expand_schedule();
             run_block(state);
         }

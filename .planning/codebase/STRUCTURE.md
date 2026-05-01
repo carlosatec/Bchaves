@@ -1,162 +1,166 @@
+<!-- refreshed: 2026-05-01 -->
 # Codebase Structure
+
 **Analysis Date:** 2026-05-01
+
 ## Directory Layout
+
 ```
 [project-root]/
-├── .planning/         # GSD planning artifacts
-├── build/            # Compiled binaries (generated)
-├── core/             # Cryptographic core
-├── doc/              # Project documentation
-├── engine/           # Search engine implementations
-├── modulos/         # CLI entry points
-├── puzzles/         # Puzzle definitions
-├── system/           # System infrastructure
-├── tests/           # Test sources
-├── traps/            # Trap file storage
-├── CONTRIBUTING.md  # Contribution guide
-├── LICENSE          # MIT license
-├── Makefile         # Build configuration
-├── QUALITY_SCAN.md  # Code quality report
-├── README.md        # Project overview
-└── tutorial-gsd.md # Tutorial
+├── modulos/              # CLI entry points
+│   ├── address.cpp       # Address search CLI
+│   ├── bsgs.cpp          # BSGS search CLI
+│   └── kangaroo.cpp      # Kangaroo search CLI
+├── engine/               # Search algorithm implementations
+│   ├── app.hpp           # Engine orchestration (run_address, report_found)
+│   ├── app.cpp           # Engine utilities
+│   ├── address.cpp       # Address search (linear + hybrid)
+│   ├── bsgs.cpp          # Baby-step giant-step algorithm
+│   └── kangaroo.cpp      # Pollard's kangaroo (fleet model)
+├── core/                 # Cryptographic primitives
+│   ├── secp256k1.hpp     # Secp256k1 curve (BigInt, point arithmetic)
+│   ├── secp256k1.cpp     # Secp256k1 implementation
+│   ├── hash.hpp          # SHA-256, RIPEMD160 (batched + portable)
+│   ├── hash.cpp          # Hash implementation
+│   ├── address.hpp       # Address derivation (P2PKH, P2SH, bech32)
+│   ├── address.cpp       # Address derivation implementation
+│   ├── base58.hpp        # Base58 encoding/decoding
+│   ├── base58.cpp        # Base58 implementation
+│   ├── cuckoo.hpp        # Cuckoo filter for fast lookups
+│   ├── ripemd160.hpp     # RIPEMD-160 hash
+│   └── hash_table.hpp    # Trap table for kangaroo
+├── system/               # Infrastructure services
+│   ├── cli.hpp           # CLI argument parsing
+│   ├── cli.cpp           # CLI implementation
+│   ├── types.hpp         # Common types (options, enums, structs)
+│   ├── hardware.hpp      # Hardware detection & auto-tuning
+│   ├── hardware.cpp      # Hardware implementation
+│   ├── targets.hpp       # Target file loading
+│   ├── targets.cpp       # Target loading implementation
+│   ├── checkpoint.hpp   # Checkpoint save/load
+│   ├── checkpoint.cpp   # Checkpoint implementation
+│   ├── format.hpp        # Output formatting
+│   ├── format.cpp        # Formatting implementation
+│   ├── io.hpp            # File I/O (found.txt)
+│   └── io.cpp            # I/O implementation
+├── puzzles/              # Target address files (puzzles to solve)
+│   ├── 1.txt             # Puzzle 1 target addresses
+│   └── ...
+└── doc/                  # Documentation
+    ├── ARCHITECTURE.md   # Architecture overview
+    ├── TESTING.md        # Testing patterns
+    └── ...
 ```
+
 ## Directory Purposes
-**`core/`:**
-- Purpose: Low-level cryptographic primitives
-- Contains: `secp256k1.cpp`, `address.cpp`, `hash.cpp`, `base58.cpp`, `hash_table.cpp`, `cuckoo.cpp`
-- Key files: `secp256k1.cpp` (1128 lines), `hash.cpp`
 
-**`engine/`:**
-- Purpose: Search algorithm implementations
-- Contains: `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`, `app.cpp`
-- Key files: `address.cpp` (883 lines) - main search logic
+**modulos/:**
+- Purpose: Command-line interface entry points for each search algorithm
+- Contains: Single `main()` function files that parse CLI and invoke engine
+- Key files: `[modulos/address.cpp]`, `[modulos/bsgs.cpp]`, `[modulos/kangaroo.cpp]`
 
-**`system/`:**
-- Purpose: System services (CLI, I/O, checkpointing)
-- Contains: `cli.cpp`, `io.cpp`, `checkpoint.cpp`, `hardware.cpp`, `format.cpp`, `targets.cpp`
+**engine/:**
+- Purpose: Search algorithm implementations - the core computational logic
+- Contains: Address search (linear/hybrid), BSGS, Kangaroo with worker thread management
+- Key files: `[engine/address.cpp]`, `[engine/bsgs.cpp]`, `[engine/kangaroo.cpp]`, `[engine/app.hpp]`
 
-**`modulos/`:**
-- Purpose: Executable entry points
-- Contains: `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`
-- Note: These are thin wrappers that call engine functions
+**core/:**
+- Purpose: Low-level cryptographic primitives - no external dependencies
+- Contains: Secp256k1 curve arithmetic, SHA-256, RIPEMD-160, Base58, Cuckoo Filter
+- Key files: `[core/secp256k1.hpp]`, `[core/hash.hpp]`, `[core/cuckoo.hpp]`, `[core/address.hpp]`
 
-**`tests/`:**
-- Purpose: Test and validation programs
-- Contains: `crypto_test.cpp`
+**system/:**
+- Purpose: Platform abstraction and infrastructure services
+- Contains: CLI parsing, hardware detection, thread pinning, checkpoint persistence, target loading
+- Key files: `[system/cli.hpp]`, `[system/hardware.hpp]`, `[system/checkpoint.hpp]`, `[system/targets.hpp]`
 
-**`doc/`:**
-- Purpose: Project documentation
-- Contains: `ARCHITECTURE.md`, `CONFIGURATION.md`, `DEVELOPMENT.md`, `GETTING-STARTED.md`, `TESTING.md`
+**puzzles/:**
+- Purpose: Input files containing target addresses/public keys to search for
+- Contains: Text files with one target per line (address, hash160, or pubkey)
+- Generated: No - user-provided or pre-downloaded
 
-**`build/`:**
-- Purpose: Generated binary output directory
-- Generated: Yes
-- Committed: No (in .gitignore)
 ## Key File Locations
+
 **Entry Points:**
-- `modulos/address.cpp`: Address search CLI entry
-- `modulos/bsgs.cpp`: BSGS search CLI entry
-- `modulos/kangaroo.cpp`: Kangaroo search CLI entry
-- `tests/crypto_test.cpp`: Cryptographic test runner
+- `[modulos/address.cpp]`: Address search - `./bchaves --address -b 32 -t targets.txt`
+- `[modulos/bsgs.cpp]`: BSGS search - `./bchaves --bsgs -b 40 -k 1024 -t pubkey.hex`
+- `[modulos/kangaroo.cpp]`: Kangaroo search - `./bchaves --kangaroo -r start:end -t pubkey.hex`
 
 **Configuration:**
-- `Makefile`: Build targets (lines 9-72)
-- `system/types.hpp`: Type definitions and enums
+- `[system/types.hpp]`: All option structures (`AddressOptions`, `BsgsOptions`, `KangarooOptions`)
+- `[system/cli.cpp]`: CLI argument parsing and help text
 
 **Core Logic:**
-- `core/secp256k1.cpp`: Secp256k1 elliptic curve implementation
-- `engine/address.cpp`: Address search implementation
-- `core/address.cpp`: Bitcoin address derivation
+- `[core/secp256k1.hpp]`: BigInt (256-bit), Secp256k1Point, Jacobian coordinates, GLV endomorphism
+- `[core/hash.hpp]`: Sha256 class with `hash4()`, `hash8()` for AVX2 batched hashing
+- `[core/cuckoo.hpp]`: CuckooFilter for O(1) probabilistic target lookup
 
-**Core Headers:**
-- `core/secp256k1.hpp`: Secp256k1 interface
-- `core/address.hpp`: Address derivation interface
-- `core/hash.hpp`: Hash function interface
-- `core/cuckoo.hpp`: Cuckoo filter interface
+**Testing:**
+- No dedicated test directory - tests appear to be manual or benchmark-driven via `--benchmark` flag
 
-**System Headers:**
-- `system/cli.hpp`: CLI parsing interface
-- `system/checkpoint.hpp`: Checkpoint interface
-- `system/hardware.hpp`: Hardware detection interface
-- `system/types.hpp`: Common types and enums
-- `system/targets.hpp`: Target loading interface
-- `engine/app.hpp`: Engine orchestration interface
-
-**System Implementation:**
-- `system/cli.cpp`: CLI argument parsing
-- `system/checkpoint.cpp`: Checkpoint save/load
-- `system/hardware.cpp`: CPU detection and affinity
-- `system/io.cpp`: Result file I/O
-- `system/format.cpp`: Output formatting
-- `system/targets.cpp`: Target file parsing
 ## Naming Conventions
+
 **Files:**
 - Pattern: `*.cpp` for implementations, `*.hpp` for headers
-- Example: `engine/address.cpp`, `core/secp256k1.hpp`
+- Example: `address.cpp`, `address.hpp`
 
-**Functions:**
-- Pattern: `snake_case` or `lower_snake_case`
-- Example: `parse_address_cli()`, `run_address()`, `load_targets()`
-
-**Types/Structs:**
-- Pattern: `PascalCase`
-- Example: `Secp256k1Point`, `AddressMatcher`, `CheckpointState`
+**Directories:**
+- Pattern: Lowercase singular nouns
+- Example: `core/`, `engine/`, `modulos/`, `system/`
 
 **Namespaces:**
-- Pattern: `bchaves::core`, `bchaves::engine`, `bchaves::system`
-- Example: `bchaves::core::Secp256k1Point`
+- Pattern: `bchaves::{layer}` (e.g., `bchaves::core`, `bchaves::engine`, `bchaves::system`)
+- Example: `namespace bchaves::core { ... }`
 
-**Constants:**
-- Pattern: `kPrefix` (Hungarian notation)
-- Example: `kFieldPrime`, `kCurveOrder`, `kGLV_Beta`
+**Types:**
+- Pattern: PascalCase for classes/structs
+- Example: `BigInt`, `Secp256k1Point`, `AddressOptions`
+
+**Functions:**
+- Pattern: snake_case
+- Example: `run_address()`, `load_targets()`, `detect_hardware()`
+
+**Enums:**
+- Pattern: PascalCase enum name, PascalCase values
+- Example: `SearchMode::sequential`, `TargetType::address_btc`
+
 ## Where to Add New Code
-**New Search Algorithm:**
-- Primary code: `engine/` directory
-- Entry point: New file in `modulos/` + Makefile target
-- Example: Copy `modulos/address.cpp` → `modulos/newmode.cpp`
+
+**New Search Algorithm (new engine):**
+- Implementation: `[engine/myalgorithm.cpp]`
+- Entry point: `[modulos/myalgorithm.cpp]` (new main)
+- Declaration: Add to `[engine/app.hpp]`
 
 **New Cryptographic Primitive:**
-- Implementation: `core/` directory
-- Header: `core/newprimitive.hpp`
-- Example: Copy `core/secp256k1.cpp` pattern
+- Implementation: `[core/mycrypto.cpp]`
+- Header: `[core/mycrypto.hpp]`
+- Note: Keep core/ dependency-free
 
 **New System Service:**
-- Implementation: `system/` directory
-- Header: `system/newservice.hpp`
-- Example: Copy `system/checkpoint.cpp` pattern
+- Implementation: `[system/myservice.cpp]`
+- Header: `[system/myservice.hpp]`
+- Update: Add types to `[system/types.hpp]` if needed
 
-**Utilities:**
-- Shared helpers: Appropriate `system/` or `core/` file
-- Don't create new utility files for small helpers
+**New Target Type:**
+- Update: `[system/targets.cpp:detect_type()]`
+- Add: Parse logic in `[system/targets.cpp]`
 
-**Tests:**
-- Test program: `tests/` directory
-- Example: `tests/crypto_test.cpp`
+**New Hardware Feature Detection:**
+- Update: `[system/hardware.cpp:detect_hardware()]`
+- Add: CPU feature flag to `[system/types.hpp:CPUFeature]`
+
 ## Special Directories
-**`build/`:**
-- Purpose: Compiled executables and intermediates
-- Generated: Yes (by `make all`)
-- Committed: No
 
-**`traps/`:**
-- Purpose: Persistent trap storage for kangaroo mode
-- Generated: Yes (by kangaroo engine)
-- Committed: No
+**puzzles/:**
+- Purpose: User-provided target files to search against
+- Generated: No
+- Committed: Yes (sample puzzles 1-99)
 
-**`puzzles/`:**
-- Purpose: Bitcoin puzzle definitions
+**doc/:**
+- Purpose: Project documentation (architecture, testing, development guides)
 - Generated: No
 - Committed: Yes
-## Source File Summary
-| File | Lines | Purpose |
-|------|-------|---------|
-| `core/secp256k1.cpp` | 1128 | Secp256k1 elliptic curve math |
-| `engine/address.cpp` | 883 | Address search implementation |
-| `system/cli.cpp` | 267 | CLI argument parsing |
-| `core/secp256k1.hpp` | 119 | Secp256k1 interface |
-| `system/types.hpp` | 164 | Common types |
-| `core/hash.cpp` | ~400 | SHA-256, RIPEMD-160 |
-| `engine/app.cpp` | 41 | Engine orchestration |
-| `system/checkpoint.cpp` | ~200 | Checkpoint persistence |
+
 ---
+
 *Structure analysis: 2026-05-01*

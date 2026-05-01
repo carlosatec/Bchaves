@@ -12,12 +12,12 @@
 #include "engine/app.hpp"
 #include "core/secp256k1.hpp"
 #include "core/hash.hpp"
-#include "core/hash.hpp"
 #include "core/cuckoo.hpp"
 #include "core/hash_table.hpp"
 #include "system/checkpoint.hpp"
 #include <iostream>
 #include <vector>
+#include <immintrin.h>
 #include <array>
 #include <thread>
 #include <atomic>

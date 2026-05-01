@@ -1,171 +1,193 @@
+<!-- refreshed: 2026-05-01 -->
 # Architecture
+
 **Analysis Date:** 2026-05-01
+
 ## System Overview
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Application Layer                        │
-│         `modulos/*.cpp` - CLI entry points                 │
-├──────────────────┬──────────────────┬───────────────────────┤
-│   `modulos/      │   `modulos/      │    `modulos/          │
-│    address.cpp`   │    bsgs.cpp`     │     kangaroo.cpp`     │
-└────────┬─────────┴────────┬─────────┴──────────┬────────────┘
-         │                  │                     │
-         ▼                  ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Engine Layer (`engine/`)                      │
-│  `engine/address.cpp`, `engine/bsgs.cpp`, `engine/kangaroo.cpp`│
-│  `engine/app.cpp` - Orchestration & reporting               │
-├──────────────────┬──────────────────┬───────────────────────┤
-│   `engine/       │   `engine/       │    `engine/          │
-│    address.cpp`  │    bsgs.cpp`     │     kangaroo.cpp`      │
-│  Search Logic    │  BSGS Logic      │   Kangaroo Logic      │
-└────────┬─────────┴────────┬─────────┴──────────┬────────────┘
-         │                  │                     │
-         ▼                  ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Core Layer (`core/`)                         │
-│  `core/secp256k1.cpp` - Elliptic curve math                │
-│  `core/address.cpp` - Bitcoin address derivation          │
-│  `core/hash.cpp` - SHA-256, RIPEMD-160                    │
-│  `core/base58.cpp` - Base58 encoding                      │
-└────────┬─────────┴────────┬─────────┴──────────┬────────────┘
-         │                  │                     │
-         ▼                  ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│              System Layer (`system/`)                     │
-│  `system/cli.cpp` - Command-line parsing                    │
-│  `system/io.cpp` - File I/O, result persistence            │
-│  `system/checkpoint.cpp` - State checkpointing             │
-│  `system/hardware.cpp` - CPU detection, thread affinity   │
-│  `system/format.cpp` - Output formatting                  │
-│  `system/targets.cpp` - Target file loading               │
-│  `system/types.hpp` - Type definitions                    │
-���─────────────────────────────────────────────────────────────┘
+
 ```
+┌─────────────────────────────────────────────────────────────┐
+│                    modulos/ (CLI Entrypoints)               │
+│  `[modulos/address.cpp]`, `[modulos/bsgs.cpp]`, `[modulos/kangaroo.cpp]`
+├─────────────────────────────────────────────────────────────┤
+│                     engine/ (Search Engines)                │
+│  `[engine/app.hpp]`, `[engine/address.cpp]`, `[engine/bsgs.cpp]`, `[engine/kangaroo.cpp]`
+├─────────────────────────────────────────────────────────────┤
+│                      core/ (Crypto Primitives)               │
+│  `[core/secp256k1.hpp]`, `[core/hash.hpp]`, `[core/address.hpp]`, `[core/cuckoo.hpp]`
+├─────────────────────────────────────────────────────────────┤
+│                    system/ (Infrastructure)                │
+│  `[system/cli.hpp]`, `[system/hardware.hpp]`, `[system/checkpoint.hpp]`, `[system/targets.hpp]`
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## Component Responsibilities
+
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| CLI Entry | Parse args, dispatch to engine | `modulos/*.cpp` |
-| Address Search | Hybrid/sequential key search | `engine/address.cpp` |
-| BSGS Search | Baby-step giant-step | `engine/bsgs.cpp` |
-| Kangaroo | Pollard's kangaroo algorithm | `engine/kangaroo.cpp` |
-| Orchestration | Backend config, reporting | `engine/app.cpp` |
-| Secp256k1 Math | Point multiplication, GLV | `core/secp256k1.cpp` |
-| Address Derivation | Private key → BTC address | `core/address.cpp` |
-| Hashing | SHA-256, RIPEMD-160 | `core/hash.cpp` |
-| Base58 | Base58Check encoding | `core/base58.cpp` |
-| Checkpoint | Progress persistence | `system/checkpoint.cpp` |
-| Hardware | CPU detection, affinity | `system/hardware.cpp` |
+| modulos/ | CLI entry points that parse arguments and invoke engines | `[modulos/address.cpp]`, `[modulos/bsgs.cpp]`, `[modulos/kangaroo.cpp]` |
+| engine/ | Search algorithms orchestration, worker threads, batch processing | `[engine/address.cpp]`, `[engine/bsgs.cpp]`, `[engine/kangaroo.cpp]`, `[engine/app.cpp]` |
+| core/ | Cryptographic operations: secp256k1, hashing, BigInt, address derivation | `[core/secp256k1.hpp]`, `[core/hash.hpp]`, `[core/address.hpp]`, `[core/cuckoo.hpp]` |
+| system/ | Infrastructure: CLI parsing, hardware detection, I/O, checkpoints | `[system/cli.hpp]`, `[system/hardware.hpp]`, `[system/checkpoint.hpp]`, `[system/targets.hpp]` |
+
 ## Pattern Overview
-**Overall:** Layered modular monolith with pluggable search algorithms
+
+**Overall:** Layered Pipeline Architecture with Worker Thread Pool
+
 **Key Characteristics:**
-- Namespaced C++ (`bchaves::core`, `bchaves::engine`, `bchaves::system`)
-- Header-only support for simple types (`*.hpp`)
-- Separate compilation for logic (`*.cpp`)
-- Three-layer architecture: Modulos → Engine → Core/System
+- Clear separation between CLI parsing (modulos), algorithm orchestration (engine), cryptographic operations (core), and system services (system)
+- Multi-threaded search with thread pinning to CPU cores
+- Checkpoint/resume capability for long-running searches
+- Cuckoo Filter for fast target lookups (O(1) probabilistic)
+- Batch processing with Jacobian point arithmetic for performance
+
 ## Layers
-**Modulos Layer:**
-- Purpose: CLI entry points (main functions)
-- Location: `modulos/`
-- Contains: `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`
-- Depends on: `engine/app.hpp`, `system/cli.hpp`
-- Used by: Executable binaries
-**Engine Layer:**
-- Purpose: Search algorithm implementations
-- Location: `engine/`
-- Contains: `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`, `app.cpp`
-- Depends on: `core/`, `system/`
-- Used by: `modulos/`
-**Core Layer:**
-- Purpose: Cryptographic primitives
-- Location: `core/`
-- Contains: `secp256k1.cpp`, `address.cpp`, `hash.cpp`, `base58.cpp`
-- Depends on: Standard library only
-- Used by: `engine/`
-**System Layer:**
-- Purpose: Infrastructure services
-- Location: `system/`
-- Contains: `cli.cpp`, `io.cpp`, `checkpoint.cpp`, `hardware.cpp`, etc.
-- Depends on: Standard library only
-- Used by: `engine/`, `modulos/`
+
+**modulos/ (CLI Entry Points):**
+- Purpose: Command-line interface entry points that parse user arguments and invoke engine functions
+- Location: `[modulos/]`
+- Contains: `main()` functions for each search algorithm
+- Depends on: `engine/` (run_address, run_bsgs, run_kangaroo), `system/` (CLI parsing)
+- Used by: End user command line
+
+**engine/ (Search Algorithm Orchestration):**
+- Purpose: Implements search algorithms, manages worker threads, handles batch processing
+- Location: `[engine/]`
+- Contains: Address search (linear + hybrid chunk), BSGS algorithm, Kangaroo (Fleet model)
+- Depends on: `core/` (cryptography), `system/` (hardware detection, checkpoints, targets, formatting)
+- Used by: `modulos/` entry points
+
+**core/ (Cryptographic Primitives):**
+- Purpose: Low-level cryptographic operations - secp256k1 elliptic curve, SHA-256, RIPEMD160, BigInt arithmetic
+- Location: `[core/]`
+- Contains: Secp256k1 point multiplication (portable + GLV endomorphism), SHA-256 (AVX2 batched), RIPEMD160, Base58 encoding, Cuckoo Filter
+- Depends on: None (lowest layer - self-contained)
+- Used by: `engine/` search algorithms
+
+**system/ (Infrastructure Services):**
+- Purpose: Platform abstraction - hardware detection, thread pinning, CLI parsing, file I/O, checkpoint persistence
+- Location: `[system/]`
+- Contains: Hardware detection, auto-tuning profiles, target file loading, checkpoint save/load, formatting
+- Depends on: None (uses standard C++ library)
+- Used by: `engine/` and `modulos/`
+
 ## Data Flow
-### Address Search Flow
-1. **CLI Parse** (`system/cli.cpp:19`) - Parse `-b`, `-k`, `-R` options
-2. **Hardware Detect** (`system/hardware.cpp`) - Detect cores, cache, features
-3. **Targets Load** (`system/targets.cpp`) - Load address targets, build matcher
-4. **Range Resolve** (`engine/address.cpp:134`) - Calculate bit range bounds
-5. **Workers Spawn** (`engine/address.cpp:638-777`) - Spawn threads
-6. **Key Generation** - Generate private keys (sequential or hybrid LCG)
-7. **Point Multiply** (`core/secp256k1.cpp:847`) - Compute public keys
-8. **Batch Hash** (`core/hash.cpp`) - SHA-256 + RIPEMD-160 batched
-9. **Matcher Check** (`engine/address.cpp:105`) - CuckooFilter + binary search
-10. **Match Found** - Report and persist result (`system/io.cpp`)
-### Key Checkpointing Flow
-1. **Checkpoint Save** (`system/checkpoint.cpp`) - Periodic state serialization
-2. **Chunk State** - For hybrid mode: counter, step, size
-3. **Worker State** - For sequential mode: per-thread current key
-4. **Resume Load** (`engine/address.cpp:550-588`) - Load checkpoint, verify compatibility
+
+### Primary Request Path (Address Search)
+
+1. **Entry Point** - `modulos/address.cpp:main()` - parses CLI arguments via `[system/cli.cpp]`
+2. **Options Creation** - `[system/types.hpp:AddressOptions]` struct created with parsed parameters
+3. **Engine Invocation** - `[engine/app.cpp:run_address()]` called with options
+4. **Hardware Detection** - `[system/hardware.cpp:detect_hardware()]` queries CPU features and memory
+5. **Auto-Tuning** - `[system/hardware.cpp:tune_for()]` calculates thread count and batch size
+6. **Target Loading** - `[system/targets.cpp:load_targets()]` parses target file, creates Cuckoo Filter
+7. **Range Calculation** - `[engine/address.cpp:resolve_range()]` computes start/end based on `-b bits`
+8. **Worker Spawn** - `[engine/address.cpp]` spawns N threads (one per CPU core)
+9. **Thread Loop** - Each worker iterates through range, computes public key → hash160 → compares against targets
+10. **Match Found** - `[engine/app.cpp:report_found()]` outputs result and optionally saves to `found.txt`
+
+### BSGS Search Path
+
+1. **Entry Point** - `modulos/bsgs.cpp:main()` - parses `-b bits` and `-k table_k`
+2. **Baby Steps Phase** - `[engine/bsgs.cpp]` pre-computes table of n*m points, stores in shards with Cuckoo Filter
+3. **Giant Steps Phase** - Worker threads iterate `target - i*step*G`, lookup in Cuckoo Filter + binary search in shards
+4. **Match** - When filter matches, full binary search verifies exact match, computes private key = baby + giant
+
+### Kangaroo Search Path
+
+1. **Entry Point** - `modulos/kangaroo.cpp:main()` - parses `-r start:end` range
+2. **Cold Boot** - `[engine/kangaroo.cpp:load_traps_from_disk()]` loads previous traps from disk (if any)
+3. **Fleet Initialization** - Each thread manages 64 kangaroos (wild/tame ratio configurable)
+4. **Jump Table** - 64-entry pre-computed jump table with exponential distances
+5. **Search Loop** - Each kangaroo jumps randomly based on x-coordinate, inserts trap when distinguished point found
+6. **Collision Detection** - When wild meets tame, private key is computed: `candidate = range_end + distance_wild - distance_tame`
+
+**State Management:**
+- Global atomic counters for progress tracking
+- Mutex-protected shared state for found key reporting
+- Per-worker state for sequential/hybrid checkpointing
+
 ## Key Abstractions
-**BigInt:**
-- Purpose: 256-bit integer for private keys
-- Location: `core/secp256k1.cpp:26-37`
-- Pattern: 4 × 64-bit limbs, little-endian
+
+**BigInt (256-bit):**
+- Purpose: Represent secp256k1 private keys and curve points
+- Examples: `[core/secp256k1.hpp:BigInt]`
+- Pattern: 4x uint64_t limbs array
+
 **Secp256k1Point:**
-- Purpose: Elliptic curve point representation
-- Location: `core/secp256k1.cpp:56-60`
-- Pattern: Affine coordinates (x, y) + infinity flag
+- Purpose: Elliptic curve point (x, y)
+- Examples: `[core/secp256k1.hpp:Secp256k1Point]`
+- Pattern: Jacobian coordinates for batch processing, affine for output
+
 **PointJacobian:**
-- Purpose: Jacobian projective coordinates for efficient arithmetic
-- Location: `core/secp256k1.cpp:62-66`
-- Pattern: (x/z², y/z³, z)
+- Purpose: Internal representation for fast point arithmetic
+- Examples: `[core/secp256k1.hpp:PointJacobian]`
+- Pattern: Uses z-coordinate for efficient addition/doubling
+
+**CuckooFilter:**
+- Purpose: Probabilistic set membership for fast target lookup
+- Examples: `[core/cuckoo.hpp:CuckooFilter]`
+- Pattern: 16-bit fingerprints, 4 slots per bucket, cuckoo hashing
+
 **AddressMatcher:**
-- Purpose: Target address matching with O(1) filter
-- Location: `engine/app.cpp:26-29`
-- Pattern: Sorted vector + CuckooFilter
-**CheckpointState:**
-- Purpose: Serializable search progress
-- Location: `system/types.hpp:135-156`
-- Pattern: Versioned struct with optional hybrid/worker fields
+- Purpose: Holds target addresses for search comparison
+- Examples: `[engine/app.hpp:AddressMatcher]`
+- Pattern: Sorted vector + Cuckoo Filter for O(log n) binary search + O(1) filter pre-check
+
 ## Entry Points
-**address:**
-- Location: `modulos/address.cpp`
-- Triggers: `./build/address targets.txt -b 71`
-- Responsibilities: Parse CLI, spawn address search workers
-**bsgs:**
-- Location: `modulos/bsgs.cpp`
-- Triggers: `./build/bsgs targets.txt -b 40`
-- Responsibilities: BSGS table build and lookup
-**kangaroo:**
-- Location: `modulos/kangaroo.cpp`
-- Triggers: `./build/kangaroo targets.txt -b 75`
-- Responsibilities: Kangaroo discrete log search
-**crypto_test:**
-- Location: `tests/crypto_test.cpp`
-- Triggers: `make test`
-- Responsibilities: Cryptographic integrity validation
+
+**modulos/address.cpp:**
+- Location: `[modulos/address.cpp]`
+- Triggers: `bchaves --address -b 32 -t targets.txt`
+- Responsibilities: Parse CLI, invoke run_address(), handle return codes
+
+**modulos/bsgs.cpp:**
+- Location: `[modulos/bsgs.cpp]`
+- Triggers: `bchaves --bsgs -b 40 -k 1024 -t pubkey.hex`
+- Responsibilities: Parse CLI, invoke run_bsgs(), handle return codes
+
+**modulos/kangaroo.cpp:**
+- Location: `[modulos/kangaroo.cpp]`
+- Triggers: `bchaves --kangaroo -r 1:FFFFFFFFFFFFFFFF -t pubkey.hex`
+- Responsibilities: Parse CLI, invoke run_kangaroo(), handle trap persistence
+
 ## Architectural Constraints
-- **Threading:** `std::thread` with manual pinning via `system/hardware.cpp:pin_thread_to_core()`
-- **Global state:** `g_interrupt_requested` (`engine/address.cpp:38`), `g_chunk_counter` (`engine/address.cpp:72`)
-- **No external dependencies:** Pure C++17, no third-party crypto libraries
-- **Memory:** Stack-allocated batch buffers (`alignas(32)`) in hot loops
+
+- **Threading:** Worker threads spawned per CPU core, pinned via `[system/hardware.cpp:pin_thread_to_core()]`
+- **Global state:** Atomic counters for progress (`g_chunk_counter` in hybrid mode), signal handler for graceful shutdown
+- **Circular imports:** None - clear unidirectional dependency: modulos → engine → (core + system)
+- **Memory:** Cuckoo Filter uses ~10% of available RAM, Kangaroo traps use ~80% of available RAM
+
 ## Anti-Patterns
-### TODO Comment - Incomplete Assembly
-**What happens:** `core/secp256k1.cpp:23` - Incomplete inline assembly for multiplication
-**Why it's wrong:** Only multiplies limb[0], missing limbs 1-3
-**Do this instead:** Use the C++ fallback below (which is correct) or complete the assembly
-### TODO Comment - Sequential Mode
-**What happens:** `engine/address.cpp:515` - Sequential worker not parallelized yet
-**Why it's wrong:** Threads created but workers not properly distributed
-**Do this instead:** Follow hybrid mode pattern in `engine/address.cpp:638-651`
+
+### Direct BigInt Arithmetic in Hot Loop
+
+**What happens:** Some inner loops perform individual BigInt operations instead of batch operations
+**Why it's wrong:** Each BigInt operation involves 4-limb arithmetic; batch operations amortize overhead
+**Do this instead:** Use `[core/secp256k1.hpp:batch_normalize()]` and `[core/secp256k1.hpp:add_points_mixed()]` for batch processing
+
+### Missing AVX2 Detection Fallback
+
+**What happens:** Code assumes AVX2/SHA-NI hardware support without runtime capability check
+**Why it's wrong:** Crashes on older CPUs without these extensions
+**Do this instead:** Use `[core/hash.hpp:Sha256::supports_avx2()]` and `[core/hash.hpp:Sha256::supports_shani()]` before enabling SIMD paths
+
 ## Error Handling
-**Strategy:** Return `bool` + `std::string& error` for all fallible operations
+
+**Strategy:** Return codes + stderr messages + optional checkpoint save on interrupt
+
 **Patterns:**
-- `parse_*_cli()` returns `false` with error message on failure
-- `load_*()` returns success indicator
-- Checkpoint errors printed but don't halt execution
+- Return 0 on success, non-zero on error
+- Print `[E]` prefix for errors, `[+]` for status, `[*]` for progress
+- On SIGINT, save checkpoint before exit (if enabled)
+
 ## Cross-Cutting Concerns
-**Logging:** Direct `std::cout`/`std::cerr` - no logging framework
-**Validation:** CLI validation returns errors before engine starts
-**Authentication:** Not applicable (search engine)
+
+**Logging:** Console output only via `std::cout`/`std::cerr` with progress indicators
+**Validation:** Input validation in CLI parser, curve order validation in secp256k1
+**Authentication:** Not applicable (this is a search engine, not an authentication system)
+**Thread Safety:** Atomics for counters, mutexes for shared state (found key, worker state snapshot)
+
 ---
+
 *Architecture analysis: 2026-05-01*

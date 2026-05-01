@@ -20,13 +20,15 @@
 - Make (GNU Make)
 - Compiler: g++ (GCC)
 - Linker: GNU ld (via g++)
+- Standard: C++17
 
 ## Frameworks
 
 **Core:**
 - None - Pure C++17 custom implementation
-- Custom Secp256k1 elliptic curve cryptography
-- Custom SHA-256 and RIPEMD-160 hash implementations
+- Custom Secp256k1 elliptic curve cryptography (`core/secp256k1.cpp`)
+- Custom SHA-256 and RIPEMD-160 hash implementations (`core/hash.cpp`)
+- Custom Base58 encoding (`core/base58.cpp`)
 
 **Testing:**
 - Custom test runner via `crypto_test` executable
@@ -35,7 +37,10 @@
 **Build/Dev:**
 - Makefile with multi-target builds
 - Flags: `-std=c++17 -O3 -flto -Wall -Wextra`
-- Architecture-specific optimization flags
+- Architecture-specific optimization flags:
+  - SSE2: `-march=westmere -msse2 -mno-avx`
+  - ARM64: `-march=armv8.2-a+crypto`
+  - x86_64: `-march=native`
 
 ## Key Dependencies
 

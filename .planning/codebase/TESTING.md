@@ -1,163 +1,206 @@
 # Testing Patterns
+
 **Analysis Date:** 2026-05-01
+
 ## Test Framework
-**Runner:**
-- No external test framework (Catch2, GTest, etc.)
-- Custom regression harness in `tests/crypto_test. cpp`
-- Compiled via Makefile: `make test` → builds and runs `tests/crypto_test. cpp`
-- Exit code: 0 on all pass, 1 on any failure
-**Assertion Library:**
-- Standard `<cassert>` with custom `EXPECT` macro
-- Comparison-based: `EXPECT(condition, "message")` prints `[FAIL] message` on false
-- Counters track pass/fail: `g_pass`, `g_fail`
-**Build Integration:**
-- Makefile target:
-```makefile
-test: $(BUILD_DIR)/crypto_ test
-    $(BUILD_DIR)/crypto_ test
-$(BUILD_DIR)/crypto_test: tests/crypto_test. cpp $(COMMON_SOURCES) | $(BUILD_DIR)
-    $(CXX) $(CXXFLAGS) $(COMMON_FLAGS) tests/crypto_test. cpp $(COMMON_SOURCES) -o $@
-```
-- Run via: `make test` (builds if needed, then runs)
-- All Common_ SOURCES included for full cryptographic access
+
+**Status:** No testing infrastructure detected
+
+**Observation:** No test files found in any directory
+
+**Config Files:** None found
+- No `CMakeLists.txt` with test targets
+- No `Makefile` with test rules
+- No `catch2`, `gtest`, or other test framework includes
+
 ## Test File Organization
-**Location:**
-- Single file: `tests/crypto_test. cpp` (489 lines)
-- All test functions in one file for simplicity
-**Naming:**
-- File: `crypto_test. cpp` (regression suite for cryptographic correctness)
-- No separate test directory or co-located tests
-- All tests use `test_` prefix: `test_sha256()`, `test_scalar_multiply()`
-## Test Structure
-**Suite Organization:**
-```cpp
-static int g_pass = 0;
-static int g_fail = 0;
-#define EXPECT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "[FAIL] " << msg << "\n"; \
-        ++g_fail; \
-    } else { \
-        ++g_pass; \
-    } \
-} while (0)
+
+**Location:** Not applicable - no tests exist
+
+**Recommendation:** Establish tests in:
 ```
-**Patterns:**
-- Static counters and EXPECT macro at file scope
-- Each test in a `static void test_*()` function
-- Named sections in comments: `// ============================================================ // SHA-256: vetores de teste NIST // ============================================================`
-- Console output: `std::cout << "[*] test_sha256\n";` to show progress
-- Main calls each test in sequence
-- Results summary at end: `std::cout << "\n=== Results: " << g_pass << " passed, " << g_fail << " failed ===\n";`
+tests/
+├── unit/
+│   ├── test_bigint.cpp
+│   ├── test_hash.cpp
+│   └── test_secp256k1.cpp
+├── integration/
+│   ├── test_address_derivation.cpp
+│   └── test_checkpoint.cpp
+└── bench/
+    ├── bench_sha256.cpp
+    └── bench_kangaroo.cpp
+```
+
+## Test Structure Patterns
+
+**Not applicable** - no tests to analyze
+
+**Recommended patterns for this codebase:**
+
+### Unit Test Structure
+```cpp
+#include <catch2/catch_test_macros.hpp>
+
+TEST_CASE("BigInt addition", "[bigint]") {
+    bchaves::core::BigInt a(1);
+    bchaves::core::BigInt b(2);
+    bchaves::core::BigInt c = a + b;
+    REQUIRE(c == bchaves::core::BigInt(3));
+}
+```
+
+### Property-Based Tests (for crypto)
+```cpp
+TEST_CASE("BigInt associativity", "[bigint][property]") {
+    for (int i = 0; i < 1000; ++i) {
+        BigInt a = random_bigint();
+        BigInt b = random_bigint();
+        BigInt c = random_bigint();
+        REQUIRE((a + b) + c == a + (b + c));
+    }
+}
+```
+
 ## Mocking
-**Framework:** None
-**Patterns:** No mocking; all tests use real cryptographic implementations against known test vectors
-**What to Mock:** N/A - integration tests use full implementations
-**What NOT to Mock:** Everything - cryptographic tests must use real implementations
+
+**Framework:** Not applicable - no mocking observed
+
+**What to Mock (recommended):**
+- Hardware detection: mock `detect_hardware()` for consistent CI
+- File I/O: mock checkpoint/trap file operations
+- Threading: mock thread creation for deterministic tests
+
+**What NOT to Mock:**
+- Cryptographic primitives: test actual implementations
+- BigInt arithmetic: verify with known test vectors
+- secp256k1 operations: use known elliptic curve points
+
 ## Fixtures and Factories
-**Test Data:**
-- Hard-coded test vectors from NIST/standards documents:
+
+**Not applicable** - no tests exist
+
+**Recommended patterns:**
+
+### Test Fixtures
 ```cpp
-// NIST SHA-256 test vector: SHA-256("")
-const char* expected = "e3b0c442298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78d52b855";
-EXPECT(to_hex( std::vector<uint8_ t>(h.begin(), h.end())) == expected, "SHA-256 empty string");
+struct CryptoFixture {
+    BigInt test_private_key;
+    Secp256k1Point expected_point;
+    
+    CryptoFixture() {
+        // Known test vector from literature
+        test_private_key = BigInt(1);
+    }
+};
 ```
-- Bitcoin canonical test vectors for private keys, WIF, addresses:
+
+### Factory Functions
 ```cpp
-// Privkey = 1 → WIF compressed: KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn
-BigInt priv(1);
-DerivedKeyInfo info;
-bool ok = derive_key_info(priv, info);
-EXPECT(info.wif_compressed == "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn", "WIF compressed for privkey 1");
+BigInt random_bigint(std::uint32_t bits) {
+    BigInt result;
+    for (int i = 0; i < 4; ++i) {
+        result.limbs[i] = rand() | (rand() << 16);
+    }
+    return result;
+}
 ```
-**Location:** All hard-coded in `crypto_test. cpp`
-## Test Categories
-**Unit Tests:** None explicitly separated; all tests are unit-level but use full implementations
-**Regression Tests:**
-- `test_sha256()` - NIST vectors
-- `test_ripemd160()` - standard vectors
-- `test_hash160_pubkey()` - Hash160 of compressed pubkey
-- `test_scalar_multiply()` - secp256k1 multiplication G, 2G, 7G
-- `test_pubkey_serde()` - serialization/deserialization round-trip
-- `test_wif()` - WIF encoding from known private keys
-- `test_address()` - P2PKH address generation
-- `test_bigint_ops()` - BigInt arithmetic, carry propagation, comparison
-- `test_glv_decomposition()` - GLV vs direct multiply consistency
-- `test_mul_small()` - `mul_small_in_place` vs `operator*`
-- `test_bytes32_roundtrip()` - big-endian byte serialization
-- `test_mod_arithmetic()` - modular add/subtract
-- `test_batch_normalize()` - Jacobian normalization
+
+## Test Types Needed
+
+**Unit Tests:**
+- BigInt operations (add, subtract, multiply, divide)
+- Hash functions (SHA-256, RIPEMD160)
+- secp256k1 point operations
+- Base58 encoding/decoding
+- Address derivation
+- CLI argument parsing
+
 **Integration Tests:**
-- `test_cli_contracts()` - CLI parsing validation (argument rejection, option storage)
-- `test_checkpoint_roundtrip()` - checkpoint save/load file round-trip
-## Common Patterns
-**Cryptographic Vectors:**
-```cpp
-// SHA-256 known-answer test
-const char* expected = "e3b0c44...";
-auto h = sha256(data, length);
-EXPECT(to_hex(std::vector<uint8_ t>(h.begin(), h.end())) == expected, "description");
-```
-**Round-Trip Testing:**
-```cpp
-// Serialize → deserialize → compare
-uint8_ t buf[33];
-serialize_pubkey(original, true, buf);
-Secp256k1Point recovered = deserialize_pubkey(buf, 33);
-EXPECT(!recovered.infinity, "deserialized not infinity");
-EXPECT(recovered.x == original.x, "round-trip x matches");
-EXPECT(recovered.y == original.y, "round-trip y matches");
-```
-**Comparison Testing:**
-```cpp
-// GLV must match direct computation
-Secp256k1Point p_direct = secp256k1_ multiply(priv);
-Secp256k1Point p_glv = secp256k1_multiply_glv(priv);
-EXPECT(p_direct.x == p_glv.x, "GLV x matches direct x");
-EXPECT(p_direct.y == p_glv.y, "GLV y matches direct y");
-```
-**CLI Contract Testing:**
-```cpp
-// Build argv array from string vector
-std::vector< std::string> args = {"kangaroo", "target.txt", "-b", "75"};
-std::vector< char*> argv = make_ argv(args);
-EXPECT(!bchaves::system::parse_kangaroo_cli(static_ cast< int>(argv.size()), argv.data(), options, error), "rejects bit range 0");
-EXPECT(error.find("1 e 256") != std::string:: npos, "reports bit range validation");
-```
-**File I/O Testing:**
-```cpp
-// Save → load → verify state
-std::filesystem:: path temp = std::filesystem:: temp_directory_ path() / "bchaves_checkpoint_test.ckp";
-EXPECT(bchaves::system::save_checkpoint(temp, state, error), "save checkpoint round-trip file");
-EXPECT(bchaves::system::load_checkpoint(temp, loaded, error), "load checkpoint round-trip file");
-EXPECT(loaded.algorithm == state.algorithm, "checkpoint algorithm round-trip");
-// Cleanup
-std::error_ code ec;
-std::filesystem:: remove(temp, ec);
-```
-## Run Commands
+- Full address derivation from private key
+- Checkpoint save/load cycle
+- Trap file persistence and loading
+
+**Property Tests:**
+- BigInt mathematical properties (associativity, distributivity)
+- Point addition identity: P + O = P
+- Curve order property: G * n = O (point at infinity)
+
+**Performance Tests:**
+- Hash throughput (hashes/second)
+- Key derivation throughput
+- Kangaroo/BSGS search rate
+
+## Coverage
+
+**Current:** 0% - no tests exist
+
+**Recommended Targets:**
+- Core crypto: 90%+
+- CLI parsing: 80%+
+- Checkpoint I/O: 90%+
+
+**View Coverage (recommended):**
 ```bash
-make test              # Build and run crypto_test
-make clean            # Clean build artifacts
-make address          # Build address engine (no test run)
+cmake -DCMAKE_CXX_FLAGS="--coverage" ...
+lcov --capture --directory . --output-file coverage.info
+lcov --summary coverage.info
 ```
-## Test Coverage
-**Requirements:** None enforced (no coverage tool integration)
-**Gaps:** No coverage tool (gcov/lcov); no automated coverage enforcement
-- Manual verification via known-answer test vectors
-- No test for error paths (only happy-path regression tests)
-- No performance regression tests
-- No stress tests or boundary condition tests
-- No test for `SHA- NI` backend (disabled due to incomplete implementation)
-## Test Philosophy
-**Principle:** Cryptographic correctness via known-answer test vectors
-- Every algorithm has at least one KAT (Known-Answer Test)
-- Tests use published test vectors (NIST, Bitcoin canonical)
-- Tests are deterministic, repeatable
-- No random data, no timing-dependent tests
-**Limitations:**
-- Single regression file; no organization into categories
-- Manual progress output (`[*] test_sha256`)
-- No test framework features (parametrized tests, fixtures, etc.)
-- No test isolation (each test runs in same process, state may leak)
+
+## Known Test Vectors
+
+**For BigInt:**
+```cpp
+// From secp256k1 specification
+BigInt one(1);
+BigInt curve_order = secp256k1_curve_order();  // n
+REQUIRE(secp256k1_multiply(one).x != 0);  // Generator point
+```
+
+**For Address Derivation:**
+```cpp
+// Bitcoin wiki test vectors
+BigInt private_key(0);
+std::string expected_wif = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn";
+// ... verify address matches
+```
+
+**For SHA-256:**
+```cpp
+// Known test vector
+std::string input = "abc";
+auto hash = sha256(input);
+std::array<uint8_t, 32> expected = {/* known SHA-256("abc") */};
+REQUIRE(hash == expected);
+```
+
+## Async Testing
+
+**Not applicable** - no async code tested
+
+**Recommendation:** Use `std::async` with timeout for thread tests:
+```cpp
+TEST_CASE("Worker completes within timeout", "[thread]") {
+    auto future = std::async(std::launch::async, run_search, options);
+    auto status = future.wait_for(std::chrono::minutes(5));
+    REQUIRE(status == std::future_status::ready);
+}
+```
+
+## Error Testing
+
+**Recommendation:**
+```cpp
+TEST_CASE("Invalid private key rejected", "[address]") {
+    BigInt zero;
+    DerivedKeyInfo info;
+    REQUIRE(!derive_key_info(zero, info));  // Must fail
+    
+    BigInt too_big = curve_order + 1;
+    REQUIRE(!derive_key_info(too_big, info));  // Must fail
+}
+```
+
 ---
+
+*Testing analysis: 2026-05-01*

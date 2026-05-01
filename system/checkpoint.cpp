@@ -157,11 +157,18 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
         return false;
     }
 
-    const std::uint32_t stored_crc = static_cast<std::uint32_t>(buffer[buffer.size() - 4]) |
-                                     (static_cast<std::uint32_t>(buffer[buffer.size() - 3]) << 8u) |
-                                     (static_cast<std::uint32_t>(buffer[buffer.size() - 2]) << 16u) |
-                                     (static_cast<std::uint32_t>(buffer[buffer.size() - 1]) << 24u);
-    const std::vector<std::uint8_t> payload(buffer.begin(), buffer.end() - 4);
+    // Validate buffer has enough space for CRC at the end
+    if (buffer.size() > std::numeric_limits<std::size_t>::max() - 4) {
+        error = "checkpoint tamanho invalido (overflow)";
+        return false;
+    }
+
+    const std::size_t payload_size = buffer.size() - 4;
+    const std::uint32_t stored_crc = static_cast<std::uint32_t>(buffer[payload_size]) |
+                                     (static_cast<std::uint32_t>(buffer[payload_size + 1]) << 8u) |
+                                     (static_cast<std::uint32_t>(buffer[payload_size + 2]) << 16u) |
+                                     (static_cast<std::uint32_t>(buffer[payload_size + 3]) << 24u);
+    const std::vector<std::uint8_t> payload(buffer.begin(), buffer.begin() + payload_size);
     if (bchaves::core::crc32(payload) != stored_crc) {
         error = "checkpoint com CRC invalido";
         return false;
@@ -187,6 +194,17 @@ bool load_checkpoint(const std::filesystem::path& file, CheckpointState& state, 
     state.type = static_cast<SearchType>(read_u32(payload, offset));
     state.threads = read_u32(payload, offset);
     state.batch_size = read_u32(payload, offset);
+
+    // Validate loaded values to prevent corrupt data issues
+    if (state.threads > 256) {
+        error = "checkpoint com numero invalido de threads (max 256)";
+        return false;
+    }
+    if (state.batch_size > 1024) {
+        error = "checkpoint com batch_size invalido (max 1024)";
+        return false;
+    }
+
     state.timestamp = read_u64(payload, offset);
     if (offset + 96 > payload.size()) {
         error = "checkpoint truncado ao ler ranges";
