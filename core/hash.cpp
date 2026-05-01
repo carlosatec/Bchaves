@@ -216,6 +216,99 @@ void Sha256::transform_portable() {
 
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #pragma GCC push_options
+#pragma GCC target("sse4.1")
+#endif
+void Sha256::hash4(const std::uint8_t* const data[4], std::size_t length, std::uint8_t* const out[4]) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (length == 33 || length == 65) {
+        const __m128i bswap_mask = _mm_set_epi8(
+            12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
+        );
+
+        __m128i W[64];
+        const __m128i zero = _mm_setzero_si128();
+
+        #define LOAD_W4(i) _mm_set_epi32( \
+            *(const std::uint32_t*)(data[3] + i*4), *(const std::uint32_t*)(data[2] + i*4), \
+            *(const std::uint32_t*)(data[1] + i*4), *(const std::uint32_t*)(data[0] + i*4))
+
+        #define SHR4(x, n) _mm_srli_epi32(x, n)
+        #define ROTR4(x, n) _mm_or_si128(_mm_srli_epi32(x, n), _mm_slli_epi32(x, 32 - n))
+        #define XOR4(a, b) _mm_xor_si128(a, b)
+        #define AND4(a, b) _mm_and_si128(a, b)
+        #define ANDNOT4(a, b) _mm_andnot_si128(a, b)
+        #define OR4(a, b) _mm_or_si128(a, b)
+        #define ADD4(a, b) _mm_add_epi32(a, b)
+        #define SIG0_4(x) XOR4(ROTR4(x, 7), XOR4(ROTR4(x, 18), SHR4(x, 3)))
+        #define SIG1_4(x) XOR4(ROTR4(x, 17), XOR4(ROTR4(x, 19), SHR4(x, 10)))
+        #define EP0_4(x) XOR4(ROTR4(x, 2), XOR4(ROTR4(x, 13), ROTR4(x, 22)))
+        #define EP1_4(x) XOR4(ROTR4(x, 6), XOR4(ROTR4(x, 11), ROTR4(x, 25)))
+        #define CH4(e, f, g) XOR4(AND4(e, f), ANDNOT4(e, g))
+        #define MAJ4(a, b, c) OR4(AND4(a, b), OR4(AND4(a, c), AND4(b, c)))
+
+        auto expand_schedule4 = [&]() {
+            for (int i = 16; i < 64; ++i) {
+                W[i] = ADD4(ADD4(SIG1_4(W[i - 2]), W[i - 7]), ADD4(SIG0_4(W[i - 15]), W[i - 16]));
+            }
+        };
+
+        auto run_block4 = [&](__m128i state[8]) {
+            __m128i A = state[0]; __m128i B = state[1]; __m128i C = state[2]; __m128i D = state[3];
+            __m128i E = state[4]; __m128i F = state[5]; __m128i G = state[6]; __m128i H = state[7];
+            const __m128i initA = A; const __m128i initB = B; const __m128i initC = C; const __m128i initD = D;
+            const __m128i initE = E; const __m128i initF = F; const __m128i initG = G; const __m128i initH = H;
+
+            for (int i = 0; i < 64; ++i) {
+                __m128i T1 = ADD4(ADD4(ADD4(H, EP1_4(E)), CH4(E, F, G)), ADD4(_mm_set1_epi32(kTable_[i]), W[i]));
+                __m128i T2 = ADD4(EP0_4(A), MAJ4(A, B, C));
+                H = G; G = F; F = E; E = ADD4(D, T1);
+                D = C; C = B; B = A; A = ADD4(T1, T2);
+            }
+            state[0] = ADD4(A, initA); state[1] = ADD4(B, initB); state[2] = ADD4(C, initC); state[3] = ADD4(D, initD);
+            state[4] = ADD4(E, initE); state[5] = ADD4(F, initF); state[6] = ADD4(G, initG); state[7] = ADD4(H, initH);
+        };
+
+        __m128i state[8] = {
+            _mm_set1_epi32(0x6a09e667u), _mm_set1_epi32(0xbb67ae85u), _mm_set1_epi32(0x3c6ef372u), _mm_set1_epi32(0xa54ff53au),
+            _mm_set1_epi32(0x510e527fu), _mm_set1_epi32(0x9b05688cu), _mm_set1_epi32(0x1f83d9abu), _mm_set1_epi32(0x5be0cd19u),
+        };
+
+        if (length == 33) {
+            for (int i = 0; i < 8; ++i) W[i] = _mm_shuffle_epi8(LOAD_W4(i), bswap_mask);
+            W[8] = _mm_set_epi32(((uint32_t)data[3][32]<<24)|0x800000, ((uint32_t)data[2][32]<<24)|0x800000,
+                                 ((uint32_t)data[1][32]<<24)|0x800000, ((uint32_t)data[0][32]<<24)|0x800000);
+            for (int i = 9; i < 15; ++i) W[i] = zero;
+            W[15] = _mm_set1_epi32(264);
+            expand_schedule4(); run_block4(state);
+        } else {
+            for (int i = 0; i < 16; ++i) W[i] = _mm_shuffle_epi8(LOAD_W4(i), bswap_mask);
+            expand_schedule4(); run_block4(state);
+            W[0] = _mm_set_epi32(((uint32_t)data[3][64]<<24)|0x800000, ((uint32_t)data[2][64]<<24)|0x800000,
+                                 ((uint32_t)data[1][64]<<24)|0x800000, ((uint32_t)data[0][64]<<24)|0x800000);
+            for (int i = 1; i < 15; ++i) W[i] = zero;
+            W[15] = _mm_set1_epi32(520);
+            expand_schedule4(); run_block4(state);
+        }
+
+        #define STORE_H4(i, reg) do { \
+            __m128i swapped = _mm_shuffle_epi8(reg, bswap_mask); \
+            uint32_t arr[4]; _mm_storeu_si128((__m128i*)arr, swapped); \
+            ((uint32_t*)out[0])[i] = arr[0]; ((uint32_t*)out[1])[i] = arr[1]; \
+            ((uint32_t*)out[2])[i] = arr[2]; ((uint32_t*)out[3])[i] = arr[3]; \
+        } while(0)
+        STORE_H4(0, state[0]); STORE_H4(1, state[1]); STORE_H4(2, state[2]); STORE_H4(3, state[3]);
+        STORE_H4(4, state[4]); STORE_H4(5, state[5]); STORE_H4(6, state[6]); STORE_H4(7, state[7]);
+        return;
+    }
+#endif
+    for(int i = 0; i < 4; ++i) if(data[i] && out[i]) { auto h = sha256(data[i], length); std::memcpy(out[i], h.data(), 32); }
+}
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#pragma GCC pop_options
+#endif
+
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#pragma GCC push_options
 #pragma GCC target("avx2")
 #endif
 void Sha256::hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {

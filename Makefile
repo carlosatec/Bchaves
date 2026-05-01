@@ -8,11 +8,15 @@
 
 CXX ?= g++
 CXXFLAGS = -std=c++17 -O3 -flto -Wall -Wextra
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),aarch64)
-  CXXFLAGS += -march=armv8.2-a+crypto
+ifeq ($(ARCH),sse2)
+  CXXFLAGS += -march=westmere -msse2 -mno-avx
 else
-  CXXFLAGS += -march=native
+  UNAME_M := $(shell uname -m)
+  ifeq ($(UNAME_M),aarch64)
+    CXXFLAGS += -march=armv8.2-a+crypto
+  else
+    CXXFLAGS += -march=native
+  endif
 endif
 ROOT := $(shell pwd)
 BUILD_DIR := $(ROOT)/build

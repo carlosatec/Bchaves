@@ -27,6 +27,7 @@ public:
     static bool supports_avx2();
     
     // Processamento em lote (8 hashes simultâneos via AVX2)
+    static void hash4(const std::uint8_t* const data[4], std::size_t length, std::uint8_t* const out[4]);
     static void hash8(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]);
     
     Sha256() { reset(); }
