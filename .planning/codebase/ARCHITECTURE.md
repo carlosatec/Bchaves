@@ -1,7 +1,7 @@
 # Architecture
 
 ## Design Patterns
-- **SIMD Dispatching**: O sistema utiliza dispatch estático (compile-time) baseado em `#ifdef` para selecionar o kernel mais rápido disponível para a arquitetura alvo.
+- **SIMD Dispatching**: O sistema utiliza dispatch estático-performance (runtime selection via ponteiros de função) para selecionar o kernel mais rápido (AVX512, AVX2, SSE4, NEON) sem overhead de branching em loops quentes.
 - **Worker/Orchestrator**: O `App` orquestra múltiplas instâncias de `Worker` (threads), cada uma operando de forma independente com sincronização mínima para maximizar o throughput.
 - **Batched Point Addition**: Uso de Montgomery Batch Inversion (quando aplicável) e fórmulas Jacobianas para acelerar a adição de pontos em massa.
 

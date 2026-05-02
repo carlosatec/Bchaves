@@ -20,6 +20,18 @@
       "title": "Custom Crypto Implementation",
       "status": "Accepted",
       "rationale": "External libraries lack the specific SIMD optimizations needed for high-speed secp256k1 search."
+    },
+    {
+      "id": "ADR-004",
+      "title": "Static-Performance Dispatch",
+      "status": "Accepted",
+      "rationale": "Eliminates branch overhead in hot loops by selecting optimal SIMD kernels at runtime using function pointers."
+    },
+    {
+      "id": "ADR-005",
+      "title": "Zero-Cost Cuckoo Hashing",
+      "status": "Accepted",
+      "rationale": "Reuses existing HASH160 bits for Cuckoo fingerprints and indices, avoiding redundant hashing cycles."
     }
   ]
 }

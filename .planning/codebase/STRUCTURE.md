@@ -10,6 +10,8 @@ Contém as primitivas criptográficas e aritmética de campo.
 - `hash.cpp/hpp`: Wrapper de funções de hash.
 - `sha256-*.cpp`: Implementações SIMD de SHA256.
 - `ripemd160-*.cpp`: Implementações SIMD de RIPEMD160.
+- `adaptive_filter.cpp/hpp`: Despachante de filtragem multi-alvo.
+- `adaptive_filter_*.cpp`: Kernels SIMD (AVX512, AVX2, SSE4, NEON).
 
 ### `/engine`
 Implementação dos algoritmos de busca.

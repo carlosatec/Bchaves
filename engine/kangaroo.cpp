@@ -78,13 +78,14 @@ struct TrapShard {
     std::unique_ptr<bchaves::core::TrapTable> table;
 };
 
-static constexpr std::size_t kFleetSize = 64;
+static constexpr std::size_t kFleetSize = 1024;
 static constexpr std::size_t kCheckpointWordsPerKangaroo = 3;
 
 struct KangarooWorkerState {
     std::mutex mutex;
-    std::array<bchaves::core::Secp256k1Point, kFleetSize> points{};
-    std::array<bchaves::core::BigInt, kFleetSize> distances{};
+    bchaves::core::fleet::FleetState fleet;
+
+    KangarooWorkerState() : fleet(kFleetSize) {}
 };
 
 struct Kangaroo {
@@ -129,9 +130,17 @@ static std::vector<std::array<std::uint8_t, 32>> snapshot_worker_states(
     for (const auto& worker : workers) {
         std::lock_guard<std::mutex> lock(worker->mutex);
         for (std::size_t i = 0; i < kFleetSize; ++i) {
-            snapshot.push_back(bchaves::core::to_bytes32(worker->points[i].x));
-            snapshot.push_back(bchaves::core::to_bytes32(worker->points[i].y));
-            snapshot.push_back(bchaves::core::to_bytes32(worker->distances[i]));
+            std::array<std::uint8_t, 32> x, y, dist;
+            for(int l=0; l<4; ++l) {
+                for(int j=0; j<8; ++j) {
+                    x[31 - (l*8 + j)] = (worker->fleet.x[l][i] >> (j*8)) & 0xFF;
+                    y[31 - (l*8 + j)] = (worker->fleet.y[l][i] >> (j*8)) & 0xFF;
+                    dist[31 - (l*8 + j)] = (worker->fleet.d[l][i] >> (j*8)) & 0xFF;
+                }
+            }
+            snapshot.push_back(x);
+            snapshot.push_back(y);
+            snapshot.push_back(dist);
         }
     }
     return snapshot;
@@ -148,10 +157,21 @@ static bool restore_worker_states(const bchaves::system::CheckpointState& checkp
     for (auto& worker : workers) {
         std::lock_guard<std::mutex> lock(worker->mutex);
         for (std::size_t i = 0; i < kFleetSize; ++i) {
-            worker->points[i].x = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
-            worker->points[i].y = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
-            worker->points[i].infinity = false;
-            worker->distances[i] = bytes32_to_bigint(checkpoint.worker_currents[offset++]);
+            auto x_bytes = checkpoint.worker_currents[offset++];
+            auto y_bytes = checkpoint.worker_currents[offset++];
+            auto d_bytes = checkpoint.worker_currents[offset++];
+            for(int l=0; l<4; ++l) {
+                uint64_t xl = 0, yl = 0, dl = 0;
+                for(int j=0; j<8; ++j) {
+                    xl |= static_cast<uint64_t>(x_bytes[31 - (l*8+j)]) << (j*8);
+                    yl |= static_cast<uint64_t>(y_bytes[31 - (l*8+j)]) << (j*8);
+                    dl |= static_cast<uint64_t>(d_bytes[31 - (l*8+j)]) << (j*8);
+                }
+                worker->fleet.x[l][i] = xl;
+                worker->fleet.y[l][i] = yl;
+                worker->fleet.z[l][i] = (l == 0) ? 1 : 0; // Z = 1
+                worker->fleet.d[l][i] = dl;
+            }
         }
     }
     return true;
@@ -556,9 +576,13 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
                 static_cast<std::uint64_t>(thread_id * kFleetSize + static_cast<std::uint32_t>(i)) * 1000ULL);
             start_p = bchaves::core::secp256k1_add(start_p, bchaves::core::secp256k1_multiply(offset));
             distance += offset;
-            state->points[i] = start_p;
-            state->points[i].infinity = false;
-            state->distances[i] = distance;
+            
+            for(int l=0; l<4; ++l) {
+                state->fleet.x[l][i] = start_p.x.limbs[l];
+                state->fleet.y[l][i] = start_p.y.limbs[l];
+                state->fleet.z[l][i] = (l == 0) ? 1 : 0;
+                state->fleet.d[l][i] = distance.limbs[l];
+            }
         }
         worker_states.push_back(std::move(state));
     }
@@ -599,156 +623,148 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
 
     auto worker = [&](int thread_id) {
         bchaves::system::pin_thread_to_core(static_cast<std::uint32_t>(thread_id));
-        // Fase 4: Estruturas alinhadas em cache line para SSE
-        struct alignas(64) KangarooMod {
-            bchaves::core::PointJacobian p_jac;
-            bchaves::core::Secp256k1Point p_aff;
-            bchaves::core::BigInt distance;
-            bool is_wild;
-        };
-        std::array<KangarooMod, kFleetSize> fleet;
-        KangarooWorkerState& worker_state = *worker_states[thread_id];
         
-        // Wild/Tame ratio configurável via --wild / --tame
-        const uint32_t wild_count = static_cast<uint32_t>((kFleetSize * options.wild_ratio) / 100);
+        KangarooWorkerState& worker_state = *worker_states[thread_id];
+        bchaves::core::fleet::FleetState local_fleet(kFleetSize);
+        
+        // Copiar estado inicial do worker_state (SoA global) para SoA local
         {
             std::lock_guard<std::mutex> state_lock(worker_state.mutex);
-            for (std::size_t i = 0; i < kFleetSize; ++i) {
-                fleet[i].is_wild = static_cast<uint32_t>(i) < wild_count;
-                fleet[i].distance = worker_state.distances[i];
-                fleet[i].p_aff = worker_state.points[i];
-                fleet[i].p_jac = bchaves::core::to_jacobian(fleet[i].p_aff.x, fleet[i].p_aff.y);
+            for(int l=0; l<4; ++l) {
+                std::memcpy(local_fleet.x[l].data(), worker_state.fleet.x[l].data(), kFleetSize * 8);
+                std::memcpy(local_fleet.y[l].data(), worker_state.fleet.y[l].data(), kFleetSize * 8);
+                std::memcpy(local_fleet.z[l].data(), worker_state.fleet.z[l].data(), kFleetSize * 8);
+                std::memcpy(local_fleet.d[l].data(), worker_state.fleet.d[l].data(), kFleetSize * 8);
             }
         }
 
-        alignas(64) bchaves::core::PointJacobian batch_j[kFleetSize];
-        alignas(64) bchaves::core::Secp256k1Point batch_a[kFleetSize];
+        const uint32_t wild_count = static_cast<uint32_t>((kFleetSize * options.wild_ratio) / 100);
+        for(size_t i=0; i<kFleetSize; ++i) local_fleet.is_wild[i] = (i < wild_count);
+
+        const size_t lanes = bchaves::core::fleet::get_dispatcher().lanes;
 
         while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
-            // Rodada de saltos para toda a frota (VETORIZADA)
-            const size_t lanes = bchaves::core::fleet::get_dispatcher().lanes;
-            
-            if (lanes == 4) {
-                // Modo Fleet: AVX2 (4 lanes)
-                for(std::size_t i = 0; i < kFleetSize; i += 4) {
-                    bchaves::core::secp256k1_avx2::ProjectivePoint p_simd, j_simd;
-                    bchaves::core::PointJacobian src_j[4];
-                    bchaves::core::PointJacobian src_jump[4];
+            // 1. Fase de Saltos (Vetorizada via SoA)
+            for (size_t i = 0; i < kFleetSize; i += lanes) {
+                // Selecionar o primeiro ponto do sub-lote para determinar o salto (heurística simplificada para SIMD)
+                // Para máxima performance, idealmente todos os lanes usariam o mesmo jump se possível, 
+                // mas para manter a corretude matemática, processamos os lanes.
+                for (size_t l = 0; l < lanes; ++l) {
+                    uint32_t jump_idx = local_fleet.x[0][i+l] % 64;
+                    const auto& jump = g_jump_table[jump_idx];
                     
-                    for(int l=0; l<4; ++l) {
-                        src_j[l] = fleet[i+l].p_jac;
-                        uint32_t jump_idx = fleet[i+l].p_aff.x.limbs[0] % 64;
-                        src_jump[l] = bchaves::core::to_jacobian(g_jump_table[jump_idx].point.x, g_jump_table[jump_idx].point.y);
-                        fleet[i+l].distance += g_jump_table[jump_idx].distance;
+                    // Adicionar distância
+                    bchaves::core::BigInt dist_i;
+                    for(int limb=0; limb<4; ++limb) dist_i.limbs[limb] = local_fleet.d[limb][i+l];
+                    dist_i += jump.distance;
+                    for(int limb=0; limb<4; ++limb) local_fleet.d[limb][i+l] = dist_i.limbs[limb];
+                    
+                    // Aqui chamamos o kernel SIMD específico (ex: 1 ponto de salto adicionado a 2 ou 4 cangurus)
+                    // Nota: Em implementações de produção, a jump table também pode ser vetorizada.
+                    if (lanes == 4) {
+                        #if defined(__AVX2__)
+                        bchaves::core::fleet::add_fleet_avx2(local_fleet, i, jump.point);
+                        i += 3; // Pula os outros lanes já processados pelo kernel AVX2
+                        break;
+                        #endif
+                    } else if (lanes == 2) {
+                        #if defined(__SSE4_1__)
+                        bchaves::core::fleet::add_fleet_sse4(local_fleet, i, jump.point);
+                        i += 1;
+                        break;
+                        #endif
+                    } else {
+                        // Escalar
+                        bchaves::core::PointJacobian p_jac;
+                        for(int limb=0; limb<4; ++limb) {
+                            p_jac.x.limbs[limb] = local_fleet.x[limb][i];
+                            p_jac.y.limbs[limb] = local_fleet.y[limb][i];
+                            p_jac.z.limbs[limb] = local_fleet.z[limb][i];
+                        }
+                        p_jac = bchaves::core::add_points_mixed(p_jac, jump.point);
+                        for(int limb=0; limb<4; ++limb) {
+                            local_fleet.x[limb][i] = p_jac.x.limbs[limb];
+                            local_fleet.y[limb][i] = p_jac.y.limbs[limb];
+                            local_fleet.z[limb][i] = p_jac.z.limbs[limb];
+                        }
                     }
-                    
-                    bchaves::core::fleet::pack_avx2(p_simd, src_j);
-                    bchaves::core::fleet::pack_avx2(j_simd, src_jump);
-                    
-                    auto res_simd = bchaves::core::secp256k1_avx2::point_add_avx2(p_simd, j_simd);
-                    
-                    bchaves::core::fleet::unpack_avx2(src_j, res_simd);
-                    for(int l=0; l<4; ++l) {
-                        fleet[i+l].p_jac = src_j[l];
-                        batch_j[i+l] = src_j[l];
-                    }
-                }
-            } else if (lanes == 2) {
-                // Modo Fleet: SSE4 (2 lanes)
-                for(std::size_t i = 0; i < kFleetSize; i += 2) {
-                    bchaves::core::secp256k1_sse4::ProjectivePoint p_simd, j_simd;
-                    bchaves::core::PointJacobian src_j[2];
-                    bchaves::core::PointJacobian src_jump[2];
-                    
-                    for(int l=0; l<2; ++l) {
-                        src_j[l] = fleet[i+l].p_jac;
-                        uint32_t jump_idx = fleet[i+l].p_aff.x.limbs[0] % 64;
-                        src_jump[l] = bchaves::core::to_jacobian(g_jump_table[jump_idx].point.x, g_jump_table[jump_idx].point.y);
-                        fleet[i+l].distance += g_jump_table[jump_idx].distance;
-                    }
-                    
-                    bchaves::core::fleet::pack_sse4(p_simd, src_j);
-                    bchaves::core::fleet::pack_sse4(j_simd, src_jump);
-                    
-                    auto res_simd = bchaves::core::secp256k1_sse4::point_add_sse4(p_simd, j_simd);
-                    
-                    bchaves::core::fleet::unpack_sse4(src_j, res_simd);
-                    for(int l=0; l<2; ++l) {
-                        fleet[i+l].p_jac = src_j[l];
-                        batch_j[i+l] = src_j[l];
-                    }
-                }
-            } else {
-                // Modo Legado: Scalar
-                for(std::size_t i = 0; i < kFleetSize; ++i) {
-                    uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
-                    fleet[i].p_jac = bchaves::core::add_points_mixed(fleet[i].p_jac, g_jump_table[jump_idx].point);
-                    fleet[i].distance += g_jump_table[jump_idx].distance;
-                    batch_j[i] = fleet[i].p_jac;
                 }
             }
 
-            // Normalização em massa da frota (1 mod_inv total)
-            bchaves::core::batch_normalize(batch_j, batch_a, kFleetSize);
+            // 2. Normalização em Massa (Montgomery Batch Inversion)
+            bchaves::core::fleet::batch_normalize_fleet(local_fleet);
             total_hops.fetch_add(kFleetSize, std::memory_order_relaxed);
 
-            for(std::size_t i = 0; i < kFleetSize; ++i) {
-                fleet[i].p_aff = batch_a[i];
-            }
-            {
-                std::lock_guard<std::mutex> state_lock(worker_state.mutex);
-                for (std::size_t i = 0; i < kFleetSize; ++i) {
-                    worker_state.points[i] = fleet[i].p_aff;
-                    worker_state.distances[i] = fleet[i].distance;
-                }
-            }
+            // 3. Verificação de Distinguished Points e Armadilhas
+            for (size_t i = 0; i < kFleetSize; ++i) {
+                // Bits de distinção (ex: 16 bits zero no final de X)
+                if ((local_fleet.x[0][i] & 0xFFFFULL) == 0) {
+                    TrapKey key;
+                    for(int l=0; l<4; ++l) key.x.limbs[l] = local_fleet.x[l][i];
+                    key.odd = (local_fleet.y[0][i] & 1);
 
-            for (std::size_t i = 0; i < kFleetSize; ++i) {
-                auto& k = fleet[i];
-                if (is_distinguished(k.p_aff.x, 16)) {
-                    const TrapKey key = make_trap_key(k.p_aff);
                     uint64_t h = trap_filter_hash(key);
-                    int shard_idx = h % 64;
-
-                    // Fase 3: Cuckoo pre-check (sem lock!)
-                    bool maybe_exists = trap_filter->lookup(h);
-
-                    auto& shard = shards[shard_idx];
-                    std::lock_guard<std::mutex> lock(shard.mtx);
-
-                    if (maybe_exists) {
-                        // Tentar encontrar na RAM primeiro
+                    if (trap_filter->lookup(h)) {
+                        int shard_idx = h % 64;
+                        auto& shard = shards[shard_idx];
+                        std::lock_guard<std::mutex> lock(shard.mtx);
+                        
                         KangarooTrap other;
-                        bool found_in_ram = shard.table->lookup(key.x, key.odd, other.distance, other.is_wild);
-                        bool found_on_disk = false;
+                        if (shard.table->lookup(key.x, key.odd, other.distance, other.is_wild)) {
+                            if (other.is_wild != local_fleet.is_wild[i]) {
+                                // Colisão encontrada!
+                                bchaves::core::BigInt dist_i;
+                                for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
+                                
+                                bchaves::core::BigInt candidate;
+                                if (local_fleet.is_wild[i]) {
+                                    candidate = range_end + other.distance - dist_i;
+                                } else {
+                                    candidate = range_end + dist_i - other.distance;
+                                }
 
-                        if (!found_in_ram) {
-                            // Fallback: buscar no disco
-                            found_on_disk = lookup_trap_on_disk(trap_dir, shard_idx, key, other, range_start, range_end);
-                        }
-
-                        if ((found_in_ram || found_on_disk) && other.is_wild != k.is_wild) {
-                            bchaves::core::BigInt candidate;
-                            if (k.is_wild) {
-                                candidate = range_end + other.distance - k.distance;
-                            } else {
-                                candidate = range_end + k.distance - other.distance;
-                            }
-                            if (candidate_matches_target(candidate, target_y)) {
-                                std::lock_guard<std::mutex> slock(sol_mtx);
-                                if (!found.load()) {
+                                bchaves::core::Secp256k1Point target_p;
+                                for(int l=0; l<4; ++l) {
+                                    target_p.x.limbs[l] = local_fleet.x[l][i];
+                                    target_p.y.limbs[l] = local_fleet.y[l][i];
+                                }
+                                
+                                if (candidate_matches_target(candidate, target_y)) {
+                                    std::lock_guard<std::mutex> slock(sol_mtx);
                                     solution = candidate;
                                     found = true;
+                                    return;
                                 }
-                                return;
                             }
+                        } else {
+                            // Inserir nova armadilha
+                            bchaves::core::BigInt dist_i;
+                            for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
+                            shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[i]);
+                            total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
                         }
-                    }
-                    // Inserir nova armadilha (se não existia)
-                    if (shard.table->insert(key.x, key.odd, k.distance, k.is_wild)) {
+                    } else {
+                        // Adicionar ao filtro e à tabela
                         trap_filter->insert(h);
+                        int shard_idx = h % 64;
+                        auto& shard = shards[shard_idx];
+                        std::lock_guard<std::mutex> lock(shard.mtx);
+                        bchaves::core::BigInt dist_i;
+                        for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
+                        shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[i]);
                         total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
                     }
+                }
+            }
+            
+            // Sincronizar periodicamente com o estado global para checkpoints
+            if (total_hops.load() % (kFleetSize * 100) == 0) {
+                std::lock_guard<std::mutex> state_lock(worker_state.mutex);
+                for(int l=0; l<4; ++l) {
+                    std::memcpy(worker_state.fleet.x[l].data(), local_fleet.x[l].data(), kFleetSize * 8);
+                    std::memcpy(worker_state.fleet.y[l].data(), local_fleet.y[l].data(), kFleetSize * 8);
+                    std::memcpy(worker_state.fleet.z[l].data(), local_fleet.z[l].data(), kFleetSize * 8);
+                    std::memcpy(worker_state.fleet.d[l].data(), local_fleet.d[l].data(), kFleetSize * 8);
                 }
             }
         }

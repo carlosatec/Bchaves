@@ -5,15 +5,15 @@
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 - **Hybrid-Endo Fusion Engine**: Native GLV endomorphism integration, tripling real throughput by processing 3 related keys per operation.
+- **Adaptive Cuckoo Filter**: High-performance target matching with hardware-adaptive SIMD kernels (AVX-512, AVX2, SSE4.2, NEON).
+- **ISA-Aware SIMD Acceleration**: Per-ISA optimized kernels for SHA-256 and RIPEMD-160 with automatic dispatching.
 - **Optimized Field Arithmetic**: Multiplication and square kernels (`mod_mul_k1`, `mod_square_k1`) specifically tuned for the Secp256k1 prime.
-- **ISA-Aware SIMD Acceleration**: Per-ISA optimized SHA-256 kernels (SSE4, AVX, AVX2, AVX512) with automatic detection and selection.
-- **Phase 6 Hardware Detection**: Comprehensive CPU detection including brand, model, cache sizes (L1/L2/L3), NUMA topology, and ARM64 support.
-- **v6 Checkpoint Protection**: Rigorous parameter validation to prevent progress corruption and ensure atomic resumption.
-- **Large-Scale Cuckoo Filter**: O(1) probabilistic target matching, capable of managing billions of traps in RAM and on Disk.
-- **Multi-Architecture Support**: Full compatibility with **modern ARM64 processors** (Apple Silicon, AWS Graviton) and x86_64.
+- **Hardware Detection**: Comprehensive CPU detection including cache sizes, NUMA topology, and advanced ISA features.
+- **Atomic Checkpoints**: Robust parameter validation (v6) to prevent progress corruption and ensure reliable resumption.
+- **Multi-Architecture Support**: Full compatibility with x86_64 and ARM64 (Apple Silicon, Graviton) architectures.
 
 ---
 

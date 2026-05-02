@@ -31,6 +31,7 @@
 #include <vector>
 #include <cstring>
 #include <iomanip> // Adicionado para setprecision
+#include "core/simd_hashing.hpp"
 
 namespace bchaves::engine {
 
@@ -108,20 +109,18 @@ static bool matcher_contains_hash(const AddressMatcher& matcher, const std::uint
     return std::binary_search(matcher.hashes.begin(), matcher.hashes.end(), candidate);
 }
 
-bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher) {
+bool load_targets(const std::filesystem::path& path, AddressMatcher& matcher, const bchaves::system::HardwareInfo& hardware) {
     std::cout << "[+] Carregando: " << path.string() << '\n';
     auto result = bchaves::system::load_targets(path, false);
     if (result.entries.empty()) return false;
     
-    matcher.filter = std::make_unique<bchaves::core::CuckooFilter>(result.entries.size());
+    matcher.filter = std::make_unique<bchaves::core::AdaptiveCuckooFilter>(result.entries.size(), hardware);
     for (const auto& entry : result.entries) {
         if (entry.payload.size() == 20) {
              std::array<std::uint8_t, 20> h;
              std::copy(entry.payload.begin(), entry.payload.end(), h.begin());
              matcher.hashes.push_back(h);
-             uint64_t filter_hash;
-             std::memcpy(&filter_hash, h.data(), sizeof(uint64_t));
-             matcher.filter->insert(filter_hash);
+             matcher.filter->insert(h.data());
         }
     }
     std::sort(matcher.hashes.begin(), matcher.hashes.end());
@@ -312,10 +311,20 @@ void run_hybrid_worker(
                         }
                     }
 
+                    bool filter_results[8] = {true, true, true, true, true, true, true, true};
+                    if (matcher.filter && lane_count == 8) {
+                        // O AdaptiveCuckooFilter gerencia seu próprio despacho SIMD interno
+                        matcher.filter->lookup_batch(batch_ripemd_out[0], filter_results, 8);
+                    }
+
                     for(int u=0; u<lane_count; ++u) {
-                        uint64_t filter_hash;
-                        std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
-                        if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                        if (matcher.filter) {
+                             if (lane_count == 8) {
+                                 if (!filter_results[u]) continue;
+                             } else {
+                                 if (!matcher.filter->lookup(batch_ripemd_out[u])) continue;
+                             }
+                        }
 
                         std::array<uint8_t, 20> current_hash;
                         std::memcpy(current_hash.data(), batch_ripemd_out[u], 20);
@@ -496,7 +505,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
     }
 
     AddressMatcher matcher;
-    if (!load_targets(options.target_path, matcher)) return 1;
+    if (!load_targets(options.target_path, matcher, hardware)) return 1;
 
     bchaves::core::BigInt start, end;
     if (!resolve_range(options, start, end)) return 1;
@@ -719,10 +728,13 @@ int run_address(const bchaves::system::AddressOptions& options) {
                                 bchaves::core::Sha256::hash8(data_ptr, p_len, sha_ptr);
                                 bchaves::core::ripemd160_batch8(sha_in_ptr, 32, ripemd_ptr);
 
+                                bool filter_results[8] = {true, true, true, true, true, true, true, true};
+                                if (matcher.filter) {
+                                    matcher.filter->lookup_batch(batch_ripemd_out[0], filter_results, 8);
+                                }
+
                                 for (int u = 0; u < 8; ++u) {
-                                    uint64_t filter_hash;
-                                    std::memcpy(&filter_hash, batch_ripemd_out[u], sizeof(uint64_t));
-                                    if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                                    if (!filter_results[u]) continue;
                                     if (!matcher_contains_hash(matcher, batch_ripemd_out[u])) continue;
 
                                     std::lock_guard<std::mutex> lock(found_mutex);
@@ -738,9 +750,7 @@ int run_address(const bchaves::system::AddressOptions& options) {
                                 bchaves::core::serialize_pubkey(batch_affine[k + u], compress, pub_bufs[u]);
                                 const auto sha = bchaves::core::sha256(pub_bufs[u], p_len);
                                 const auto ripemd = bchaves::core::ripemd160(sha.data(), sha.size());
-                                uint64_t filter_hash;
-                                std::memcpy(&filter_hash, ripemd.data(), sizeof(uint64_t));
-                                if (matcher.filter && !matcher.filter->lookup(filter_hash)) continue;
+                                if (matcher.filter && !matcher.filter->lookup(ripemd.data())) continue;
                                 if (!matcher_contains_hash(matcher, ripemd.data())) continue;
 
                                 std::lock_guard<std::mutex> lock(found_mutex);

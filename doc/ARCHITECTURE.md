@@ -72,13 +72,19 @@ Located in `core/hash.cpp` and `core/hash.hpp`:
 - **RIPEMD-160**: Bitcoin address hash composition.
 - **Address Derivation**: P2PKH address generation from public keys (both compressed and uncompressed formats).
 
-### Cuckoo Filter
+### Adaptive Cuckoo Filter
 
-Located in `core/cuckoo.hpp`:
+Located in `core/adaptive_filter.cpp` and `core/adaptive_filter.hpp`:
 
-- **Probabilistic Data Structure**: O(1) membership testing for target addresses.
-- **Disk-Backed Storage**: Supports billions of entries with memory-mapped I/O.
-- **False Positive Handling**: Configurable false positive rate for memory efficiency.
+- **Static Performance Dispatch**: Uses a function-pointer based dispatcher that selects optimal kernels at initialization, eliminating branching overhead during the lookup loop.
+- **ISA-Specific Kernels**: Specialized search routines for:
+  - `core/adaptive_filter_avx512.cpp`: 512-bit bitmask comparisons.
+  - `core/adaptive_filter_avx2.cpp`: 256-bit SIMD slot comparisons.
+  - `core/adaptive_filter_sse4.cpp`: 128-bit SSE4.2 parallel matching.
+  - `core/adaptive_filter_neon.cpp`: 128-bit NEON parallel matching for ARM64.
+- **Zero-Cost Hashing**: Leverages HASH160 bits directly for fingerprints and indices, removing additional CPU cycles for hashing targets.
+- **Batch Lookup**: Processes targets in batches (e.g., 8 items) to maximize SIMD register utilization and cache locality.
+- **Cache-Line Alignment**: Memory is aligned to 64-byte boundaries to prevent false sharing and ensure single-access bucket reads.
 
 ---
 
@@ -130,14 +136,14 @@ The hardware detection module provides comprehensive CPU and system profiling:
 
 The auto-tune system automatically scales batch size based on detected ISA level:
 
-| ISA Level | Base Batch | ISA Multiplier |
-|-----------|------------|----------------|
-| SSSE3 | 256 | 1x |
-| SSE4 | 256 | 2x |
-| AVX | 256 | 2x |
-| AVX2 | 512 | 4x |
-| AVX512 | 512 | 8x |
-| NEON | 256 | 2x |
+| ISA Level | Base Batch | ISA Multiplier | Optimized Components |
+|-----------|------------|----------------|----------------------|
+| SSSE3     | 256        | 1x             | Scalar Kernels       |
+| SSE4      | 256        | 2x             | SSE4.2 Cuckoo/SHA    |
+| AVX       | 256        | 2x             | AVX Hash/ECC         |
+| AVX2      | 512        | 4x             | AVX2 Cuckoo/SHA/ECC  |
+| AVX512    | 512        | 8x             | AVX512 Cuckoo/SHA/ECC|
+| NEON      | 256        | 2x             | NEON Cuckoo/SHA/ECC  |
 
 The batch size is further multiplied by the auto-tune profile (`safe`=1x, `balanced`=2x, `max`=4x) and CPU family adjustments (Xeon/Core i7/i9/Ryzen=1.5x, Apple Silicon=2x).
 

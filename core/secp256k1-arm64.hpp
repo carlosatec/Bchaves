@@ -44,16 +44,48 @@ inline void mul64x64_full(uint64x2_t a, uint64x2_t b, uint64x2_t& r_lo, uint64x2
     r_lo = vaddq_u64(ll, mid_lo);
     r_hi = vaddq_u64(hh, mid_hi);
     
-    uint64x2_t carry = vcltq_u64(r_lo, mid_lo);
+    uint64x2_t carry = vcltq_u64(r_lo, ll);
     r_hi = vaddq_u64(r_hi, vsubq_u64(vmovq_n_u64(0), carry));
 }
 
+inline void add_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
+    uint64x2_t carry = vmovq_n_u64(0);
+    for (int i = 0; i < 4; ++i) {
+        uint64x2_t sum = vaddq_u64(a[i], b[i]);
+        sum = vaddq_u64(sum, carry);
+        uint64x2_t c1 = vcltq_u64(sum, a[i]);
+        uint64x2_t c2 = vceqq_u64(sum, a[i]);
+        carry = vshrq_n_u64(vorrq_u64(c1, vandq_u64(c2, vcltq_u64(vmovq_n_u64(0), carry))), 63);
+        r[i] = sum;
+    }
+}
+
+inline void sub_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
+    uint64x2_t borrow = vmovq_n_u64(0);
+    for (int i = 0; i < 4; ++i) {
+        uint64x2_t diff = vsubq_u64(a[i], b[i]);
+        diff = vsubq_u64(diff, borrow);
+        uint64x2_t c1 = vcltq_u64(a[i], b[i]);
+        uint64x2_t c2 = vceqq_u64(a[i], b[i]);
+        borrow = vshrq_n_u64(vorrq_u64(c1, vandq_u64(c2, vcltq_u64(vmovq_n_u64(0), borrow))), 63);
+        r[i] = diff;
+    }
+}
+
 inline void add_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    for(int i=0; i<4; ++i) r[i] = vaddq_u64(a[i], b[i]);
+    add_arm64(r, a, b);
 }
 
 inline void sub_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    for(int i=0; i<4; ++i) r[i] = vsubq_u64(a[i], b[i]);
+    fe_arm64 p_limbs = {
+        vmovq_n_u64(0xFFFFFFFFFFFFFF43ULL),
+        vmovq_n_u64(0xFFFFFFFFFFFFFFFFULL),
+        vmovq_n_u64(0xFFFFFFFFFFFFFFFFULL),
+        vmovq_n_u64(0xFFFFFFFEFFFFFFFFULL)
+    };
+    fe_arm64 t;
+    add_arm64(t, a, p_limbs);
+    sub_arm64(r, t, b);
 }
 
 inline void mul_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
@@ -62,28 +94,42 @@ inline void mul_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
         for (int j = 0; j < 4; ++j) {
             uint64x2_t lo, hi;
             mul64x64_full(a[i], b[j], lo, hi);
+            
+            uint64x2_t old_acc = acc[i+j];
             acc[i+j] = vaddq_u64(acc[i+j], lo);
-            acc[i+j+1] = vaddq_u64(acc[i+j+1], hi);
+            uint64x2_t carry = vshrq_n_u64(vcltq_u64(acc[i+j], old_acc), 63);
+            
+            uint64x2_t hi_plus_carry = vaddq_u64(hi, carry);
+            int k = i + j + 1;
+            while (k < 8) {
+                uint64x2_t old_k = acc[k];
+                acc[k] = vaddq_u64(acc[k], hi_plus_carry);
+                uint64x2_t ck = vcltq_u64(acc[k], old_k);
+                if (vgetq_lane_u64(vorrq_u64(ck, vmovq_n_u64(0)), 0) == 0) break;
+                hi_plus_carry = vmovq_n_u64(1);
+                k++;
+            }
         }
     }
     
-    // Reduction for P = 2^256 - 2^32 - 977
-    uint64x2_t c = vmovq_n_u64(977);
+    // Reduction
+    uint64x2_t c_val = vmovq_n_u64(977);
     for (int i = 0; i < 4; ++i) {
-        uint64x2_t hi_limb = acc[i+4];
-        uint64x2_t prod_lo, prod_hi;
-        mul64x64_full(hi_limb, c, prod_lo, prod_hi);
+        uint64x2_t h = acc[i+4];
+        uint64x2_t p_lo, p_hi;
+        mul64x64_full(h, c_val, p_lo, p_hi);
+        uint64x2_t s_lo = vshlq_n_u64(h, 32);
+        uint64x2_t s_hi = vshrq_n_u64(h, 32);
         
-        uint64x2_t hi_shift_lo = vshlq_n_u64(hi_limb, 32);
-        uint64x2_t hi_shift_hi = vshrq_n_u64(hi_limb, 32);
+        fe_arm64 to_add = { vmovq_n_u64(0) };
+        to_add[0] = vaddq_u64(p_lo, s_lo);
+        uint64x2_t c0 = vshrq_n_u64(vcltq_u64(to_add[0], p_lo), 63);
+        to_add[1] = vaddq_u64(vaddq_u64(p_hi, s_hi), c0);
         
-        acc[i] = vaddq_u64(acc[i], prod_lo);
-        acc[i] = vaddq_u64(acc[i], hi_shift_lo);
-        
-        if (i + 1 < 4) {
-            acc[i+1] = vaddq_u64(acc[i+1], prod_hi);
-            acc[i+1] = vaddq_u64(acc[i+1], hi_shift_hi);
-        }
+        fe_arm64 current_acc;
+        for(int l=0; l<4; ++l) current_acc[l] = acc[l];
+        add_arm64(current_acc, current_acc, to_add);
+        for(int l=0; l<4; ++l) acc[l] = current_acc[l];
     }
 
     for(int i=0; i<4; ++i) r[i] = acc[i];
@@ -95,7 +141,7 @@ inline void square_mod_arm64(fe_arm64& r, const fe_arm64& a) {
 
 inline ProjectivePoint point_add_arm64(ProjectivePoint p1, ProjectivePoint p2) {
     ProjectivePoint res;
-    fe_arm64 z1_2, z2_2, u1, u2, s1, s2, h, r, h2, h3, u1h2;
+    fe_arm64 z1_2, z2_2, u1, u2, s1, s2, h, r_val, h2, h3, u1h2;
 
     square_mod_arm64(z1_2, p1.z);
     square_mod_arm64(z2_2, p2.z);
@@ -109,7 +155,7 @@ inline ProjectivePoint point_add_arm64(ProjectivePoint p1, ProjectivePoint p2) {
     mul_mod_arm64(s2, p2.y, z1_3);
 
     sub_mod_arm64(h, u2, u1);
-    sub_mod_arm64(r, s2, s1);
+    sub_mod_arm64(r_val, s2, s1);
 
     fe_arm64 z1z2;
     mul_mod_arm64(z1z2, p1.z, p2.z);
@@ -120,7 +166,7 @@ inline ProjectivePoint point_add_arm64(ProjectivePoint p1, ProjectivePoint p2) {
     mul_mod_arm64(u1h2, u1, h2);
     
     fe_arm64 r2, u1h2_2;
-    square_mod_arm64(r2, r);
+    square_mod_arm64(r2, r_val);
     add_mod_arm64(u1h2_2, u1h2, u1h2);
     
     sub_mod_arm64(res.x, r2, h3);
@@ -128,7 +174,7 @@ inline ProjectivePoint point_add_arm64(ProjectivePoint p1, ProjectivePoint p2) {
 
     fe_arm64 u1h2_x3, r_u1h2_x3, s1h3;
     sub_mod_arm64(u1h2_x3, u1h2, res.x);
-    mul_mod_arm64(r_u1h2_x3, r, u1h2_x3);
+    mul_mod_arm64(r_u1h2_x3, r_val, u1h2_x3);
     mul_mod_arm64(s1h3, s1, h3);
     sub_mod_arm64(res.y, r_u1h2_x3, s1h3);
 

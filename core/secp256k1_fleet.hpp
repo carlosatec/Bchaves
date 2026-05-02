@@ -7,6 +7,8 @@
 #pragma once
 
 #include <cstdio>
+#include <vector>
+#include <cstring>
 #include "core/secp256k1.hpp"
 #include "core/secp256k1-sse4.hpp"
 #include "core/secp256k1-avx2.hpp"
@@ -24,12 +26,32 @@ enum class BackendType {
     ARM64  = 2
 };
 
+struct FleetState {
+    size_t size;
+    std::vector<uint64_t> x[4];
+    std::vector<uint64_t> y[4];
+    std::vector<uint64_t> z[4];
+    std::vector<uint64_t> d[4]; // distances
+    std::vector<bool> is_wild;
+    std::vector<bchaves::core::BigInt> scratch; 
+
+    FleetState(size_t n) : size(n) {
+        for(int i=0; i<4; ++i) {
+            x[i].resize(n);
+            y[i].resize(n);
+            z[i].resize(n);
+            d[i].resize(n);
+        }
+        is_wild.resize(n, false);
+        scratch.resize(n);
+    }
+};
+
 struct FleetDispatcher {
     BackendType active_backend;
     size_t lanes;
 
     FleetDispatcher() {
-        // Detecção segura
         auto hw = bchaves::system::detect_hardware();
         if (hw.features & bchaves::system::cpu_avx512) {
             active_backend = BackendType::AVX512;
@@ -47,66 +69,135 @@ struct FleetDispatcher {
     }
 };
 
-// Meyers Singleton para evitar crash em inicialização estática
 inline FleetDispatcher& get_dispatcher() {
     static FleetDispatcher instance;
     return instance;
 }
 
+// ----------------------------------------------------------------------------
+// SSE4 Backend Helpers (Direct Load/Store)
+// ----------------------------------------------------------------------------
+#if defined(__SSE4_1__)
+inline void add_fleet_sse4(FleetState& state, size_t idx, const bchaves::core::Secp256k1Point& jump) {
+    bchaves::core::secp256k1_sse4::ProjectivePoint p, j;
+    for(int i=0; i<4; ++i) {
+        p.x[i] = _mm_loadu_si128((const __m128i*)&state.x[i][idx]);
+        p.y[i] = _mm_loadu_si128((const __m128i*)&state.y[i][idx]);
+        p.z[i] = _mm_loadu_si128((const __m128i*)&state.z[i][idx]);
+        j.x[i] = _mm_set1_epi64x(jump.x.limbs[i]);
+        j.y[i] = _mm_set1_epi64x(jump.y.limbs[i]);
+        j.z[i] = _mm_set1_epi64x(1);
+    }
+    auto res = bchaves::core::secp256k1_sse4::point_add_sse4(p, j);
+    for(int i=0; i<4; ++i) {
+        _mm_storeu_si128((__m128i*)&state.x[i][idx], res.x[i]);
+        _mm_storeu_si128((__m128i*)&state.y[i][idx], res.y[i]);
+        _mm_storeu_si128((__m128i*)&state.z[i][idx], res.z[i]);
+    }
+}
+#endif
+
+// ----------------------------------------------------------------------------
+// AVX2 Backend Helpers (Direct Load/Store)
+// ----------------------------------------------------------------------------
+#if defined(__AVX2__)
+inline void add_fleet_avx2(FleetState& state, size_t idx, const bchaves::core::Secp256k1Point& jump) {
+    bchaves::core::secp256k1_avx2::ProjectivePoint p, j;
+    for(int i=0; i<4; ++i) {
+        p.x[i] = _mm256_loadu_si256((const __m256i*)&state.x[i][idx]);
+        p.y[i] = _mm256_loadu_si256((const __m256i*)&state.y[i][idx]);
+        p.z[i] = _mm256_loadu_si256((const __m256i*)&state.z[i][idx]);
+        j.x[i] = _mm256_set1_epi64x(jump.x.limbs[i]);
+        j.y[i] = _mm256_set1_epi64x(jump.y.limbs[i]);
+        j.z[i] = _mm256_set1_epi64x(1);
+    }
+    auto res = bchaves::core::secp256k1_avx2::point_add_avx2(p, j);
+    for(int i=0; i<4; ++i) {
+        _mm256_storeu_si256((__m256i*)&state.x[i][idx], res.x[i]);
+        _mm256_storeu_si256((__m256i*)&state.y[i][idx], res.y[i]);
+        _mm256_storeu_si256((__m256i*)&state.z[i][idx], res.z[i]);
+    }
+}
+#endif
+
+// ----------------------------------------------------------------------------
+// AVX512 Backend Helpers (Direct Load/Store)
+// ----------------------------------------------------------------------------
+#if defined(__AVX512F__)
+inline void add_fleet_avx512(FleetState& state, size_t idx, const bchaves::core::Secp256k1Point& jump) {
+    bchaves::core::secp256k1_avx512::ProjectivePoint p, j;
+    for(int i=0; i<4; ++i) {
+        p.x[i] = _mm512_loadu_si512((const __m512i*)&state.x[i][idx]);
+        p.y[i] = _mm512_loadu_si512((const __m512i*)&state.y[i][idx]);
+        p.z[i] = _mm512_loadu_si512((const __m512i*)&state.z[i][idx]);
+        j.x[i] = _mm512_set1_epi64(jump.x.limbs[i]);
+        j.y[i] = _mm512_set1_epi64(jump.y.limbs[i]);
+        j.z[i] = _mm512_set1_epi64(1);
+    }
+    auto res = bchaves::core::secp256k1_avx512::point_add_avx512(p, j);
+    for(int i=0; i<4; ++i) {
+        _mm512_storeu_si512((__m512i*)&state.x[i][idx], res.x[i]);
+        _mm512_storeu_si512((__m512i*)&state.y[i][idx], res.y[i]);
+        _mm512_storeu_si512((__m512i*)&state.z[i][idx], res.z[i]);
+    }
+}
+#endif
+
+// ----------------------------------------------------------------------------
+// ARM64 Backend Helpers (Direct Load/Store)
+// ----------------------------------------------------------------------------
+#if defined(__aarch64__) && defined(__ARM_NEON)
+inline void add_fleet_arm64(FleetState& state, size_t idx, const bchaves::core::Secp256k1Point& jump) {
+    bchaves::core::secp256k1_arm64::ProjectivePoint p, j;
+    for(int i=0; i<4; ++i) {
+        p.x[i] = vld1q_u64((const uint64_t*)&state.x[i][idx]);
+        p.y[i] = vld1q_u64((const uint64_t*)&state.y[i][idx]);
+        p.z[i] = vld1q_u64((const uint64_t*)&state.z[i][idx]);
+        j.x[i] = vmovq_n_u64(jump.x.limbs[i]);
+        j.y[i] = vmovq_n_u64(jump.y.limbs[i]);
+        j.z[i] = vmovq_n_u64(1);
+    }
+    auto res = bchaves::core::secp256k1_arm64::point_add_arm64(p, j);
+    for(int i=0; i<4; ++i) {
+        vst1q_u64((uint64_t*)&state.x[i][idx], res.x[i]);
+        vst1q_u64((uint64_t*)&state.y[i][idx], res.y[i]);
+        vst1q_u64((uint64_t*)&state.z[i][idx], res.z[i]);
+    }
+}
+#endif
+
 /**
- * Pack/Unpack Templates e Helpers
+ * Normalização em lote SoA usando inversão de Montgomery.
  */
-
-inline void pack_sse4(bchaves::core::secp256k1_sse4::ProjectivePoint& dst, const bchaves::core::PointJacobian* src) {
-#if defined(__SSE4_1__)
-    for (int i = 0; i < 4; ++i) {
-        dst.x[i] = _mm_set_epi64x(src[1].x.limbs[i], src[0].x.limbs[i]);
-        dst.y[i] = _mm_set_epi64x(src[1].y.limbs[i], src[0].y.limbs[i]);
-        dst.z[i] = _mm_set_epi64x(src[1].z.limbs[i], src[0].z.limbs[i]);
+inline void batch_normalize_fleet(FleetState& state) {
+    size_t n = state.size;
+    std::vector<bchaves::core::BigInt> z_coords(n);
+    for(size_t i=0; i<n; ++i) {
+        for(int l=0; l<4; ++l) z_coords[i].limbs[l] = state.z[l][i];
     }
-#endif
-}
-
-inline void unpack_sse4(bchaves::core::PointJacobian* dst, const bchaves::core::secp256k1_sse4::ProjectivePoint& src) {
-#if defined(__SSE4_1__)
-    uint64_t x[2], y[2], z[2];
-    for (int i = 0; i < 4; ++i) {
-        _mm_storeu_si128((__m128i*)x, src.x[i]);
-        _mm_storeu_si128((__m128i*)y, src.y[i]);
-        _mm_storeu_si128((__m128i*)z, src.z[i]);
-        for(int l=0; l<2; ++l) {
-            dst[l].x.limbs[i] = x[l];
-            dst[l].y.limbs[i] = y[l];
-            dst[l].z.limbs[i] = z[l];
-        }
-    }
-#endif
-}
-
-inline void pack_avx2(bchaves::core::secp256k1_avx2::ProjectivePoint& dst, const bchaves::core::PointJacobian* src) {
-#if defined(__AVX2__)
-    for (int i = 0; i < 4; ++i) {
-        dst.x[i] = _mm256_set_epi64x(src[3].x.limbs[i], src[2].x.limbs[i], src[1].x.limbs[i], src[0].x.limbs[i]);
-        dst.y[i] = _mm256_set_epi64x(src[3].y.limbs[i], src[2].y.limbs[i], src[1].y.limbs[i], src[0].y.limbs[i]);
-        dst.z[i] = _mm256_set_epi64x(src[3].z.limbs[i], src[2].z.limbs[i], src[1].z.limbs[i], src[0].z.limbs[i]);
-    }
-#endif
-}
-
-inline void unpack_avx2(bchaves::core::PointJacobian* dst, const bchaves::core::secp256k1_avx2::ProjectivePoint& src) {
-#if defined(__AVX2__)
-    uint64_t x[4], y[4], z[4];
-    for (int i = 0; i < 4; ++i) {
-        _mm256_storeu_si256((__m256i*)x, src.x[i]);
-        _mm256_storeu_si256((__m256i*)y, src.y[i]);
-        _mm256_storeu_si256((__m256i*)z, src.z[i]);
+    
+    bchaves::core::batch_mod_inv_k1(z_coords.data(), n, state.scratch.data());
+    
+    for(size_t i=0; i<n; ++i) {
+        bchaves::core::BigInt zi = z_coords[i];
+        bchaves::core::BigInt zi2 = bchaves::core::mod_mul_k1(zi, zi);
+        bchaves::core::BigInt zi3 = bchaves::core::mod_mul_k1(zi2, zi);
+        
+        bchaves::core::BigInt xi, yi;
         for(int l=0; l<4; ++l) {
-            dst[l].x.limbs[i] = x[l];
-            dst[l].y.limbs[i] = y[l];
-            dst[l].z.limbs[i] = z[l];
+            xi.limbs[l] = state.x[l][i];
+            yi.limbs[l] = state.y[l][i];
+        }
+        
+        xi = bchaves::core::mod_mul_k1(xi, zi2);
+        yi = bchaves::core::mod_mul_k1(yi, zi3);
+        
+        for(int l=0; l<4; ++l) {
+            state.x[l][i] = xi.limbs[l];
+            state.y[l][i] = yi.limbs[l];
+            state.z[l][i] = (l == 0) ? 1 : 0; 
         }
     }
-#endif
 }
 
 } // namespace bchaves::core::fleet

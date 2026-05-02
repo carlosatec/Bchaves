@@ -14,18 +14,13 @@
 #include "system/hardware.hpp"
 #include "system/targets.hpp"
 #include "system/format.hpp"
-#include "core/cuckoo.hpp"
-
-#include <vector>
-#include <array>
-#include <cstdint>
-#include <memory>
+#include "core/adaptive_filter.hpp"
 
 namespace bchaves::engine {
 
 struct AddressMatcher {
     std::vector<std::array<std::uint8_t, 20>> hashes;
-    std::unique_ptr<bchaves::core::CuckooFilter> filter;
+    std::unique_ptr<bchaves::core::AdaptiveCuckooFilter> filter;
 };
 
 int run_address(const bchaves::system::AddressOptions& options);
