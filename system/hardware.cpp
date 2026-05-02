@@ -249,6 +249,7 @@ std::uint32_t detect_cpu_features() {
         if (ebx & bit_BMI2) {
             features |= cpu_bmi2;
         }
+#endif
     }
 #elif defined(__aarch64__) && defined(__linux__)
     unsigned long hwcap = getauxval(AT_HWCAP);
@@ -364,17 +365,21 @@ std::uint32_t detect_physical_cores() {
             if (line.rfind("physical id", 0) == 0) {
                 std::size_t colon = line.find(':');
                 if (colon != std::string::npos) {
-                    std::string val = line.substr(colon + 1);
-                    std::uint32_t id = static_cast<std::uint32_t>(std::stoul(val));
-                    max_physical_id = std::max(max_physical_id, id);
+                    try {
+                        std::string val = line.substr(colon + 1);
+                        std::uint32_t id = static_cast<std::uint32_t>(std::stoul(val));
+                        max_physical_id = std::max(max_physical_id, id);
+                    } catch (...) {}
                 }
             }
             if (line.rfind("core id", 0) == 0) {
                 std::size_t colon = line.find(':');
                 if (colon != std::string::npos) {
-                    std::string val = line.substr(colon + 1);
-                    std::uint32_t id = static_cast<std::uint32_t>(std::stoul(val));
-                    max_core_id = std::max(max_core_id, id);
+                    try {
+                        std::string val = line.substr(colon + 1);
+                        std::uint32_t id = static_cast<std::uint32_t>(std::stoul(val));
+                        max_core_id = std::max(max_core_id, id);
+                    } catch (...) {}
                 }
             }
         }
@@ -446,12 +451,14 @@ std::uint32_t detect_memory_channels() {
                 // Estimate channels from total memory
                 std::size_t colon = line.find(':');
                 if (colon != std::string::npos) {
-                    std::string val = line.substr(colon + 1);
-                    std::uint64_t kb = static_cast<std::uint64_t>(std::stoul(val));
-                    std::uint64_t gb = kb / (1024 * 1024);
-                    if (gb >= 32) channels = 4;
-                    else if (gb >= 16) channels = 2;
-                    else channels = 1;
+                    try {
+                        std::string val = line.substr(colon + 1);
+                        std::uint64_t kb = static_cast<std::uint64_t>(std::stoull(val));
+                        std::uint64_t gb = kb / (1024 * 1024);
+                        if (gb >= 32) channels = 4;
+                        else if (gb >= 16) channels = 2;
+                        else channels = 1;
+                    } catch (...) {}
                 }
                 break;
             }

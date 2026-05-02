@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "updated_at": "2026-05-02T00:07:00Z"
+  },
+  "decisions": [
+    {
+      "id": "ADR-001",
+      "title": "Header-only SIMD Backends",
+      "status": "Accepted",
+      "rationale": "Allows aggressive inlining by the compiler and simplifies multi-arch build dispatching via headers."
+    },
+    {
+      "id": "ADR-002",
+      "title": "Static Work Distribution",
+      "status": "Accepted",
+      "rationale": "Reduces mutex contention in search loops; threads work on independent ranges."
+    },
+    {
+      "id": "ADR-003",
+      "title": "Custom Crypto Implementation",
+      "status": "Accepted",
+      "rationale": "External libraries lack the specific SIMD optimizations needed for high-speed secp256k1 search."
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "updated_at": "2026-05-02T00:07:00Z"
+  },
+  "nodes": [
+    { "id": "core", "type": "library" },
+    { "id": "system", "type": "library" },
+    { "id": "engine", "type": "orchestrator" },
+    { "id": "modulos", "type": "binary" }
+  ],
+  "edges": [
+    { "from": "modulos", "to": "engine" },
+    { "from": "modulos", "to": "core" },
+    { "from": "modulos", "to": "system" },
+    { "from": "engine", "to": "core" },
+    { "from": "engine", "to": "system" },
+    { "from": "system", "to": "core" }
+  ]
+}

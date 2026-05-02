@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "updated_at": "2026-05-02T00:07:00Z",
+    "version": "1.0"
+  },
+  "roles": {
+    "core/secp256k1-*.hpp": "SIMD optimized elliptic curve arithmetic kernels",
+    "core/secp256k1.cpp": "Scalar reference implementation of Secp256k1",
+    "core/sha256-*.cpp": "SIMD optimized SHA256 hashing",
+    "engine/kangaroo.cpp": "Pollard's Kangaroo search engine implementation",
+    "engine/bsgs.cpp": "Baby-step Giant-step search engine implementation",
+    "engine/address.cpp": "Hybrid address search engine implementation",
+    "system/hardware.cpp": "Hardware detection and auto-tuning logic",
+    "system/checkpoint.cpp": "Persistence and session recovery management",
+    "modulos/*.cpp": "Main entry points for engine binaries"
+  }
+}

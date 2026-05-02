@@ -14,6 +14,7 @@
 #include "core/hash.hpp"
 #include "core/cuckoo.hpp"
 #include "core/hash_table.hpp"
+#include "core/secp256k1_fleet.hpp"
 #include "system/checkpoint.hpp"
 #include <iostream>
 #include <vector>
@@ -433,6 +434,7 @@ void dump_shards_to_disk(const std::string& trap_dir,
 
 
 int run_kangaroo(const bchaves::system::KangarooOptions& options) {
+    printf("[DEBUG] run_kangaroo entry\n");
     g_stop_requested.store(false, std::memory_order_relaxed);
     auto hardware = bchaves::system::detect_hardware();
     const std::string trap_dir = options.trap_dir.value_or(std::filesystem::path("traps")).string();
@@ -493,7 +495,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // Configuração de Memória e Filtro
     // ============================================================
     auto hw = bchaves::system::detect_hardware();
-    uint64_t max_traps = (hw.ram_available * 8) / 10 / 48; // 80% da RAM, ~48 bytes por trap
+    uint64_t max_traps = (hw.ram_available * 8) / 10 / sizeof(bchaves::core::TrapEntry); // 80% da RAM real
     if (max_traps < 100000) max_traps = 100000;
 
     // Cuckoo Filter dimensionado para o total esperado (RAM + Disco).
@@ -623,20 +625,67 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         alignas(64) bchaves::core::Secp256k1Point batch_a[kFleetSize];
 
         while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
-            // Rodada de saltos para toda a frota
-            // Fase 4: Prefetch da próxima entrada da Jump Table
-            for(std::size_t i = 0; i < kFleetSize; ++i) {
-                uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
-                
-                // Prefetch: antecipar a próxima entrada da jump table (DDR3 Latency Compensation)
-                if (i + 4 < kFleetSize) {
-                    uint32_t next_idx = fleet[i+4].p_aff.x.limbs[0] % 64;
-                    _mm_prefetch((const char*)&g_jump_table[next_idx], _MM_HINT_T0);
+            // Rodada de saltos para toda a frota (VETORIZADA)
+            const size_t lanes = bchaves::core::fleet::get_dispatcher().lanes;
+            
+            if (lanes == 4) {
+                // Modo Fleet: AVX2 (4 lanes)
+                for(std::size_t i = 0; i < kFleetSize; i += 4) {
+                    bchaves::core::secp256k1_avx2::ProjectivePoint p_simd, j_simd;
+                    bchaves::core::PointJacobian src_j[4];
+                    bchaves::core::PointJacobian src_jump[4];
+                    
+                    for(int l=0; l<4; ++l) {
+                        src_j[l] = fleet[i+l].p_jac;
+                        uint32_t jump_idx = fleet[i+l].p_aff.x.limbs[0] % 64;
+                        src_jump[l] = bchaves::core::to_jacobian(g_jump_table[jump_idx].point.x, g_jump_table[jump_idx].point.y);
+                        fleet[i+l].distance += g_jump_table[jump_idx].distance;
+                    }
+                    
+                    bchaves::core::fleet::pack_avx2(p_simd, src_j);
+                    bchaves::core::fleet::pack_avx2(j_simd, src_jump);
+                    
+                    auto res_simd = bchaves::core::secp256k1_avx2::point_add_avx2(p_simd, j_simd);
+                    
+                    bchaves::core::fleet::unpack_avx2(src_j, res_simd);
+                    for(int l=0; l<4; ++l) {
+                        fleet[i+l].p_jac = src_j[l];
+                        batch_j[i+l] = src_j[l];
+                    }
                 }
-                
-                fleet[i].p_jac = bchaves::core::add_points_mixed(fleet[i].p_jac, g_jump_table[jump_idx].point);
-                fleet[i].distance += g_jump_table[jump_idx].distance;
-                batch_j[i] = fleet[i].p_jac;
+            } else if (lanes == 2) {
+                // Modo Fleet: SSE4 (2 lanes)
+                for(std::size_t i = 0; i < kFleetSize; i += 2) {
+                    bchaves::core::secp256k1_sse4::ProjectivePoint p_simd, j_simd;
+                    bchaves::core::PointJacobian src_j[2];
+                    bchaves::core::PointJacobian src_jump[2];
+                    
+                    for(int l=0; l<2; ++l) {
+                        src_j[l] = fleet[i+l].p_jac;
+                        uint32_t jump_idx = fleet[i+l].p_aff.x.limbs[0] % 64;
+                        src_jump[l] = bchaves::core::to_jacobian(g_jump_table[jump_idx].point.x, g_jump_table[jump_idx].point.y);
+                        fleet[i+l].distance += g_jump_table[jump_idx].distance;
+                    }
+                    
+                    bchaves::core::fleet::pack_sse4(p_simd, src_j);
+                    bchaves::core::fleet::pack_sse4(j_simd, src_jump);
+                    
+                    auto res_simd = bchaves::core::secp256k1_sse4::point_add_sse4(p_simd, j_simd);
+                    
+                    bchaves::core::fleet::unpack_sse4(src_j, res_simd);
+                    for(int l=0; l<2; ++l) {
+                        fleet[i+l].p_jac = src_j[l];
+                        batch_j[i+l] = src_j[l];
+                    }
+                }
+            } else {
+                // Modo Legado: Scalar
+                for(std::size_t i = 0; i < kFleetSize; ++i) {
+                    uint32_t jump_idx = fleet[i].p_aff.x.limbs[0] % 64;
+                    fleet[i].p_jac = bchaves::core::add_points_mixed(fleet[i].p_jac, g_jump_table[jump_idx].point);
+                    fleet[i].distance += g_jump_table[jump_idx].distance;
+                    batch_j[i] = fleet[i].p_jac;
+                }
             }
 
             // Normalização em massa da frota (1 mod_inv total)

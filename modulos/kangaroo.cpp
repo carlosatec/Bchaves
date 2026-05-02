@@ -11,7 +11,10 @@
 #include "system/cli.hpp"
 #include <iostream>
 
+#include <cstdio>
+
 int main(int argc, char** argv) {
+    printf("[DEBUG] main entry\n");
     bchaves::system::KangarooOptions options{};
     std::string error;
 

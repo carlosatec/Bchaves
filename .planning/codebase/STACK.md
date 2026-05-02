@@ -1,78 +1,23 @@
-# Technology Stack
+# Tech Stack
 
-**Analysis Date:** 2026-05-01
+## Core Language
+- **C++17**: Utilizado para performance crítica e recursos modernos de metaprogramação (templates, constexpr).
+- **Assembly/Intrinsics**: Uso extensivo de intrinsics SIMD (SSE4, AVX2, AVX512, NEON) para acelerar aritmética de curvas elípticas e hashing.
 
-## Languages
+## Build & Toolchain
+- **GNU Make**: Sistema de build principal via `Makefile`.
+- **g++ (MinGW-w64 / GCC)**: Compilador padrão com flags de otimização agressiva (`-O3`, `-flto`).
+- **SIMD Dispatch**: Seleção em tempo de compilação via macros de pré-processador baseadas na arquitetura alvo.
 
-**Primary:**
-- C++17 - All core components (crypto, search engines, system utilities)
+## Hardware Support
+- **Multi-Arch**: Suporte nativo para x86_64 (Intel/AMD) e ARM64 (Apple Silicon, AWS Graviton, Oracle Cloud ARM).
+- **SIMD Support**:
+  - SSE2: Baseline para hardware legado.
+  - SSE4.1/4.2: Otimizações de hashing.
+  - AVX2: Kernel principal para processadores modernos.
+  - AVX512: Performance máxima para Xeon/Epyc.
+  - ARM NEON: Performance otimizada para infraestrutura cloud ARM.
 
-**Secondary:**
-- None (pure C++ implementation)
-
-## Runtime
-
-**Environment:**
-- Native binary (no runtime required)
-- Platform: x86_64 and ARM64 (Apple Silicon, AWS Graviton)
-
-**Build System:**
-- Make (GNU Make)
-- Compiler: g++ (GCC)
-- Linker: GNU ld (via g++)
-- Standard: C++17
-
-## Frameworks
-
-**Core:**
-- None - Pure C++17 custom implementation
-- Custom Secp256k1 elliptic curve cryptography (`core/secp256k1.cpp`)
-- Custom SHA-256 and RIPEMD-160 hash implementations (`core/hash.cpp`)
-- Custom Base58 encoding (`core/base58.cpp`)
-
-**Testing:**
-- Custom test runner via `crypto_test` executable
-- No external test framework
-
-**Build/Dev:**
-- Makefile with multi-target builds
-- Flags: `-std=c++17 -O3 -flto -Wall -Wextra`
-- Architecture-specific optimization flags:
-  - SSE2: `-march=westmere -msse2 -mno-avx`
-  - ARM64: `-march=armv8.2-a+crypto`
-  - x86_64: `-march=native`
-
-## Key Dependencies
-
-**Critical:**
-- None (all cryptographic code is custom implementation)
-
-**Infrastructure:**
-- Standard C++17 library (`<array>`, `<vector>`, `<string>`, `<filesystem>`)
-- POSIX APIs for threading (where available)
-
-## Configuration
-
-**Environment:**
-- Command-line arguments only (no environment variable dependency)
-- Configuration via CLI switches (see `system/cli.hpp`, `system/types.hpp`)
-
-**Build:**
-- `Makefile` - Primary build configuration
-- No CMake, no package.json
-
-## Platform Requirements
-
-**Development:**
-- g++ with C++17 support
-- GNU Make
-- POSIX-compliant shell (for thread pinning)
-
-**Production:**
-- x86_64 or ARM64 processor
-- Linux, macOS, or Windows (via WSL/MSYS2)
-- RAM: scales with target search space
-
----
-
-*Stack analysis: 2026-05-01*
+## Dependencies
+- **Standard Library (STL)**: Foco em containers de alta performance e threading.
+- **No External Crypto Libs**: Implementação customizada de Secp256k1, SHA256 e RIPEMD160 para evitar overhead e garantir controle total sobre o pipeline SIMD.

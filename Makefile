@@ -50,8 +50,9 @@ all: address bsgs kangaroo
 address: $(BUILD_DIR)/address
 bsgs: $(BUILD_DIR)/bsgs
 kangaroo: $(BUILD_DIR)/kangaroo
-test: $(BUILD_DIR)/crypto_test
+test: $(BUILD_DIR)/crypto_test $(BUILD_DIR)/simd_test
 	$(BUILD_DIR)/crypto_test
+	$(BUILD_DIR)/simd_test
 
 $(BUILD_DIR)/address: modulos/address.cpp $(ENGINE_SOURCES) $(COMMON_SOURCES) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) modulos/address.cpp $(ENGINE_SOURCES) $(COMMON_SOURCES) -o $@
@@ -64,6 +65,9 @@ $(BUILD_DIR)/kangaroo: modulos/kangaroo.cpp $(ENGINE_SOURCES) $(COMMON_SOURCES) 
 
 $(BUILD_DIR)/crypto_test: tests/crypto_test.cpp $(COMMON_SOURCES) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) tests/crypto_test.cpp $(COMMON_SOURCES) -o $@
+
+$(BUILD_DIR)/simd_test: tests/simd_test.cpp $(COMMON_SOURCES) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) tests/simd_test.cpp $(COMMON_SOURCES) -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
