@@ -335,8 +335,9 @@ std::uint32_t detect_physical_cores() {
     if (bufferSize > 0) {
         SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* buffer =
             reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(new char[bufferSize]);
-        if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_INFORMATION_RELATIONSHIP::RelationProcessorCore,
-            buffer, &bufferSize)) {
+        BOOL success = GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_INFORMATION_RELATIONSHIP::RelationProcessorCore,
+            buffer, &bufferSize);
+        if (success) {
             std::uint32_t count = 0;
             std::size_t offset = 0;
             while (offset < bufferSize) {
@@ -350,7 +351,7 @@ std::uint32_t detect_physical_cores() {
             }
             physical = count > 0 ? count : logical;
         }
-        delete[] reinterpret_cast<char*>(buffer);
+        delete[] reinterpret_cast<char*>(buffer);  // Always delete
     }
 #elif defined(__linux__)
     // Read from /proc/cpuinfo to get physical id mapping

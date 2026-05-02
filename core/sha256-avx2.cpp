@@ -14,6 +14,7 @@
 #include <immintrin.h>
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 
 namespace bchaves {
 namespace core {
@@ -44,11 +45,20 @@ static constexpr std::uint32_t kTable[64] = {
     0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
     0x391c0cb3u, 0x4ed8aa4eu, 0x5b9cca4fu, 0x682e6ff3u,
     0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
-    0x90beffEAU, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    0x90befffaU, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
 void hash8_avx2(const std::uint8_t* const data[8], std::size_t length, std::uint8_t* const out[8]) {
-    if (length != 33 && length != 65) return;
+    if (!data || !out) return;
+    if (length != 33 && length != 65) {
+        // Initialize outputs to zero on invalid length
+        for (int i = 0; i < 8; ++i) {
+            if (out[i]) {
+                std::memset(out[i], 0, 32);
+            }
+        }
+        return;
+    }
     
     const __m256i bswap_mask = _mm256_set_epi8(
         12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
