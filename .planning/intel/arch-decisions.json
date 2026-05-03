@@ -32,6 +32,18 @@
       "title": "Zero-Cost Cuckoo Hashing",
       "status": "Accepted",
       "rationale": "Reuses existing HASH160 bits for Cuckoo fingerprints and indices, avoiding redundant hashing cycles."
+    },
+    {
+      "id": "ADR-006",
+      "title": "ARMv8 Crypto Extension Integration",
+      "status": "Accepted",
+      "rationale": "Directly utilizes specialized hardware instructions (vsha256hq_u32) for SHA256, providing superior throughput compared to pure SIMD (NEON)."
+    },
+    {
+      "id": "ADR-007",
+      "title": "Universal ARM64 Detection (Linux/macOS)",
+      "status": "Accepted",
+      "rationale": "Implements platform-specific detection (getauxval for Linux, sysctlbyname for macOS) to ensure optimal kernel selection on both cloud servers and workstations."
     }
   ]
 }

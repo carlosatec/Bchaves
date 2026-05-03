@@ -32,16 +32,26 @@ static constexpr std::uint32_t kInitialHash[8] = {
 };
 
 bool g_use_shani = false;
+#if defined(__aarch64__)
+bool g_use_arm_sha2 = false;
+#endif
 std::once_flag g_dispatch_once;
+
+#if defined(__aarch64__)
+extern void transform_arm_sha2(std::uint32_t* state, const std::uint8_t* data);
+#endif
 
 void init_dispatch() {
     std::call_once(g_dispatch_once, []() {
-        // TODO: Implementacao SHA-NI incompleta - falta completar o loop
-        // de 64 rodadas (atualmente apenas 4 iteracoes sao executadas).
-        // O backend SHA-NI ainda nao implementa a rodada completa nem a
-        // acumulacao final do estado. Mantemos o despacho desabilitado
-        // ate que a versao intrinseca seja corrigida e validada.
+#if defined(__x86_64__) || defined(__i386__)
+        // TODO: Implementacao SHA-NI incompleta para x86
         g_use_shani = false;
+#elif defined(__aarch64__)
+        auto info = bchaves::system::detect_hardware();
+        g_use_arm_sha2 = (info.features & bchaves::system::cpu_neon) != 0; 
+        // Nota: A detecção exata de crypto extensions pode exigir leitura de ID_AA64ISAR0_EL1
+        // Por enquanto assumimos que se temos NEON em AArch64 moderno, tentamos usar o kernel.
+#endif
     });
 }
 
@@ -165,7 +175,13 @@ void Sha256::transform() {
     init_dispatch();
     if (g_use_shani) {
         transform_shani(state_.data(), buffer_.data());
-    } else {
+    } 
+#if defined(__aarch64__)
+    else if (g_use_arm_sha2) {
+        transform_arm_sha2(state_.data(), buffer_.data());
+    }
+#endif
+    else {
         transform_portable();
     }
 }

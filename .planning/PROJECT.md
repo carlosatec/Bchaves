@@ -9,19 +9,19 @@ Bchaves is an ultra-high performance Bitcoin private key search engine, optimize
 - **Native AVX2 SIMD**: Parallel SHA-256 and RIPEMD-160 hashing.
 - **Checkpoint Protection**: Robust progress persistence.
 - **Large-Scale Cuckoo Filter**: O(1) probabilistic target matching.
-- **Multi-Arch**: Supports x86_64 and ARM64 (Apple Silicon/Graviton).
+- **Multi-Arch**: Native support for x86_64 (AVX512/AVX2) and ARM64 (Apple Silicon/Graviton).
 
 ## 🛠️ Technology Stack
 - **Language**: C++17
-- **SIMD**: AVX2 (Intel/AMD), NEON (ARM64 via compatibility)
+- **SIMD**: AVX512, AVX2, SSE4.2 (x86), NEON & ARMv8 Crypto Extensions (ARM64).
 - **Build System**: Makefile
 - **Math**: Custom Secp256k1 Jacobian and Affine coordinate arithmetic with GLV optimization.
 
 ## 📂 System Modules
-- **`address`**: Bit-range explorer.
-- **`kangaroo`**: Pollard's Kangaroo algorithm.
-- **`bsgs`**: Baby-Step Giant-Step engine.
+- **`address`**: Bit-range explorer (Hybrid & Sequential).
+- **`kangaroo`**: Pollard's Kangaroo algorithm (Discrete Log).
+- **`bsgs`**: Baby-Step Giant-Step engine (Memory Optimized).
 
 ## 📍 Project Status
-- **Current Goal**: Final benchmarking and CLI documentation polish after persistence engine stabilization.
-- **Next Milestone**: Milestone 2: Multi-Arch Production Release.
+- **Current Goal**: Completed Phase 10 (ARM64 Crypto & Hash Acceleration).
+- **Next Milestone**: Milestone 2: Multi-Arch Production Release (Final Polish & Benchmark).

@@ -124,11 +124,10 @@ inline std::array<std::uint8_t, 20> ripemd160(const std::vector<std::uint8_t>& i
     return ripemd160(input.data(), input.size());
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#if defined(__x86_64__) || defined(__i386__)
-__attribute__((target("sse4.1")))
+#if defined(__aarch64__) || defined(__arm__)
+extern void ripemd160_batch4_neon(const std::uint8_t* const data[4], std::size_t length, std::uint8_t* const out[4]);
 #endif
-#endif
+
 inline void ripemd160_batch4(const std::uint8_t* const data[4], std::size_t length, std::uint8_t* const out[4]) {
 #if defined(__x86_64__) || defined(__i386__)
     if (length == 32) {
@@ -204,6 +203,12 @@ inline void ripemd160_batch4(const std::uint8_t* const data[4], std::size_t leng
         uint32_t a0[4], a1[4], a2[4], a3[4], a4[4];
         _mm_storeu_si128((__m128i*)a0, h0); _mm_storeu_si128((__m128i*)a1, h1); _mm_storeu_si128((__m128i*)a2, h2); _mm_storeu_si128((__m128i*)a3, h3); _mm_storeu_si128((__m128i*)a4, h4);
         for (int i = 0; i < 4; ++i) { uint32_t* o = (uint32_t*)out[i]; o[0] = a0[i]; o[1] = a1[i]; o[2] = a2[i]; o[3] = a3[i]; o[4] = a4[i]; }
+        return;
+    }
+#endif
+#if defined(__aarch64__) || defined(__arm__)
+    if (length == 32) {
+        ripemd160_batch4_neon(data, length, out);
         return;
     }
 #endif

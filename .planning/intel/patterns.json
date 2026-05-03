@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "updated_at": "2026-05-02T23:55:00Z"
+  },
+  "patterns": [
+    {
+      "name": "Static-Performance Dispatch",
+      "description": "Initialization-time selection of the best available function pointer based on CPUID/HWCAP. Eliminates runtime branching in hot loops.",
+      "usage": "Used in AdaptiveCuckooFilter and Hash dispatcher."
+    },
+    {
+      "name": "Batch-SIMD Processing",
+      "description": "Grouping independent operations (like 4 or 8 hashes) into a single SIMD pipeline to maximize throughput instead of trying to parallelize a single operation.",
+      "usage": "Used in SHA256-AVX2, RIPEMD160-NEON, and Adaptive Filter lookup."
+    },
+    {
+      "name": "Hardware-Aware Auto-Tune",
+      "description": "Scaling engine parameters (batch size, thread count) based on the detected ISA level and cache hierarchy.",
+      "usage": "Implemented in system/hardware.cpp and engine/app.cpp."
+    }
+  ]
+}

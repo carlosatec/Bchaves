@@ -23,6 +23,9 @@
 #include <sys/sysinfo.h>
 #include <sched.h>
 #include <sys/stat.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#include <unistd.h>
 #endif
 
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
@@ -263,6 +266,19 @@ std::uint32_t detect_cpu_features() {
         features |= cpu_aes;
     }
     if (hwcap & HWCAP_PMULL) {
+        features |= cpu_pmull;
+    }
+#elif defined(__APPLE__) && defined(__aarch64__)
+    int val = 0;
+    size_t len = sizeof(val);
+    features |= cpu_neon; // Todos Apple Silicon possuem NEON
+    if (sysctlbyname("hw.optional.arm.FEAT_SHA256", &val, &len, NULL, 0) == 0 && val) {
+        features |= cpu_sha_ni;
+    }
+    if (sysctlbyname("hw.optional.arm.FEAT_AES", &val, &len, NULL, 0) == 0 && val) {
+        features |= cpu_aes;
+    }
+    if (sysctlbyname("hw.optional.arm.FEAT_PMULL", &val, &len, NULL, 0) == 0 && val) {
         features |= cpu_pmull;
     }
 #endif

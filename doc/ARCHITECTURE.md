@@ -63,14 +63,14 @@ Located in `core/secp256k1.cpp` and `core/secp256k1.hpp`:
 
 Located in `core/hash.cpp` and `core/hash.hpp`:
 
-- **SHA-256**: Full implementation with ISA-specific SIMD optimization.
-- **Per-ISA Implementations**: The following specialized implementations are automatically selected based on CPU capabilities:
-  - `core/sha256-sse4.cpp`: SSE4.1/4.2 optimized
-  - `core/sha256-avx.cpp`: AVX (128-bit) optimized
-  - `core/sha256-avx2.cpp`: AVX2 (256-bit) optimized - processes 8 hashes in parallel
-  - `core/sha256-avx512.cpp`: AVX512 (512-bit) optimized
-- **RIPEMD-160**: Bitcoin address hash composition.
-- **Address Derivation**: P2PKH address generation from public keys (both compressed and uncompressed formats).
+- **SHA-256**: Full implementation with ISA-specific SIMD and Hardware acceleration.
+- **Per-ISA Implementations**:
+  - `core/sha256-sse4.cpp`: SSE4.1/4.2 optimized.
+  - `core/sha256-avx2.cpp`: AVX2 (256-bit) optimized.
+  - `core/sha256-arm64.cpp`: **ARMv8 Crypto Extensions** hardware acceleration (using `vsha256hq_u32`).
+- **RIPEMD-160**:
+  - `core/ripemd160-neon.cpp`: **NEON Batch 4x** implementation for ARM64, processing 4 hashes in parallel.
+- **Address Derivation**: P2PKH address generation from public keys with multi-arch dispatch.
 
 ### Adaptive Cuckoo Filter
 

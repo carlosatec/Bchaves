@@ -23,6 +23,7 @@ namespace {
 
 // Kernels Escalares (Fallback)
 bool lookup_scalar(const uint16_t* buckets, size_t mask, uint16_t fp, size_t i1, size_t i2) {
+    (void)mask;
     const uint16_t* b1 = &buckets[i1 * 4];
     const uint16_t* b2 = &buckets[i2 * 4];
     

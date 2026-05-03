@@ -36,3 +36,5 @@ Pontos de entrada (main) para os diferentes alvos de binário.
 Suítes de validação.
 - `crypto_test.cpp`: Testes de corretude escalar.
 - `simd_test.cpp`: Validação de kernels SIMD contra referência.
+- `test_cuckoo_adaptive.cpp`: Validação do filtro probabilístico SIMD.
+- `test_crypto_arm64.cpp`: Validação de kernels de hardware ARMv8.

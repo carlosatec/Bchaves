@@ -37,6 +37,8 @@ COMMON_SOURCES = \
 	core/adaptive_filter_avx512.cpp \
 	core/adaptive_filter_sse4.cpp \
 	core/adaptive_filter_neon.cpp \
+	core/sha256-arm64.cpp \
+	core/ripemd160-neon.cpp \
 	system/checkpoint.cpp \
 	system/cli.cpp \
 	system/format.cpp \

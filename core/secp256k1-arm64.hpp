@@ -14,10 +14,13 @@
 #include <arm_neon.h>
 #include <cstdint>
 #include <cstddef>
-#include "core/secp256k1_reduce.hpp"
 
 namespace bchaves::core::secp256k1_arm64 {
 
+/**
+ * @brief Elemento de campo representado em 4 registros uint64x2_t (cada registro guarda 2 lanes).
+ * Isso permite processar 2 field elements em paralelo.
+ */
 typedef uint64x2_t fe_arm64[4];
 
 struct ProjectivePoint {
@@ -26,6 +29,9 @@ struct ProjectivePoint {
     fe_arm64 z;
 };
 
+/**
+ * @brief Multiplicação 64x64 -> 128-bit usando NEON.
+ */
 inline void mul64x64_full(uint64x2_t a, uint64x2_t b, uint64x2_t& r_lo, uint64x2_t& r_hi) {
     uint32x2_t a32 = vmovn_u64(a);
     uint32x2_t b32 = vmovn_u64(b);
@@ -45,31 +51,49 @@ inline void mul64x64_full(uint64x2_t a, uint64x2_t b, uint64x2_t& r_lo, uint64x2
     r_hi = vaddq_u64(hh, mid_hi);
     
     uint64x2_t carry = vcltq_u64(r_lo, ll);
-    r_hi = vaddq_u64(r_hi, vsubq_u64(vmovq_n_u64(0), carry));
+    r_hi = vaddq_u64(r_hi, vnegq_s64(vreinterpretq_s64_u64(carry)));
 }
 
+/**
+ * @brief Adição 256-bit unrolled.
+ */
 inline void add_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    uint64x2_t carry = vmovq_n_u64(0);
-    for (int i = 0; i < 4; ++i) {
-        uint64x2_t sum = vaddq_u64(a[i], b[i]);
-        sum = vaddq_u64(sum, carry);
-        uint64x2_t c1 = vcltq_u64(sum, a[i]);
-        uint64x2_t c2 = vceqq_u64(sum, a[i]);
-        carry = vshrq_n_u64(vorrq_u64(c1, vandq_u64(c2, vcltq_u64(vmovq_n_u64(0), carry))), 63);
-        r[i] = sum;
-    }
+    uint64x2_t s0 = vaddq_u64(a[0], b[0]);
+    uint64x2_t c0 = vshrq_n_u64(vcltq_u64(s0, a[0]), 63);
+    
+    uint64x2_t s1 = vaddq_u64(a[1], b[1]);
+    s1 = vaddq_u64(s1, c0);
+    uint64x2_t c1 = vshrq_n_u64(vorrq_u64(vcltq_u64(s1, a[1]), vandq_u64(vceqq_u64(s1, a[1]), c0)), 63);
+    
+    uint64x2_t s2 = vaddq_u64(a[2], b[2]);
+    s2 = vaddq_u64(s2, c1);
+    uint64x2_t c2 = vshrq_n_u64(vorrq_u64(vcltq_u64(s2, a[2]), vandq_u64(vceqq_u64(s2, a[2]), c1)), 63);
+    
+    uint64x2_t s3 = vaddq_u64(a[3], b[3]);
+    s3 = vaddq_u64(s3, c2);
+    
+    r[0] = s0; r[1] = s1; r[2] = s2; r[3] = s3;
 }
 
+/**
+ * @brief Subtração 256-bit unrolled.
+ */
 inline void sub_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    uint64x2_t borrow = vmovq_n_u64(0);
-    for (int i = 0; i < 4; ++i) {
-        uint64x2_t diff = vsubq_u64(a[i], b[i]);
-        diff = vsubq_u64(diff, borrow);
-        uint64x2_t c1 = vcltq_u64(a[i], b[i]);
-        uint64x2_t c2 = vceqq_u64(a[i], b[i]);
-        borrow = vshrq_n_u64(vorrq_u64(c1, vandq_u64(c2, vcltq_u64(vmovq_n_u64(0), borrow))), 63);
-        r[i] = diff;
-    }
+    uint64x2_t d0 = vsubq_u64(a[0], b[0]);
+    uint64x2_t b0 = vshrq_n_u64(vcltq_u64(a[0], b[0]), 63);
+    
+    uint64x2_t d1 = vsubq_u64(a[1], b[1]);
+    d1 = vsubq_u64(d1, b0);
+    uint64x2_t b1 = vshrq_n_u64(vorrq_u64(vcltq_u64(a[1], b[1]), vandq_u64(vceqq_u64(a[1], b[1]), b0)), 63);
+    
+    uint64x2_t d2 = vsubq_u64(a[2], b[2]);
+    d2 = vsubq_u64(d2, b1);
+    uint64x2_t b2 = vshrq_n_u64(vorrq_u64(vcltq_u64(a[2], b[2]), vandq_u64(vceqq_u64(a[2], b[2]), b1)), 63);
+    
+    uint64x2_t d3 = vsubq_u64(a[3], b[3]);
+    d3 = vsubq_u64(d3, b2);
+    
+    r[0] = d0; r[1] = d1; r[2] = d2; r[3] = d3;
 }
 
 inline void add_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
@@ -77,43 +101,40 @@ inline void add_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
 }
 
 inline void sub_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    fe_arm64 p_limbs = {
-        vmovq_n_u64(0xFFFFFFFFFFFFFF43ULL),
-        vmovq_n_u64(0xFFFFFFFFFFFFFFFFULL),
-        vmovq_n_u64(0xFFFFFFFFFFFFFFFFULL),
-        vmovq_n_u64(0xFFFFFFFEFFFFFFFFULL)
+    static const fe_arm64 p_limbs = {
+        vdupq_n_u64(0xFFFFFFFFFFFFFF43ULL),
+        vdupq_n_u64(0xFFFFFFFFFFFFFFFFULL),
+        vdupq_n_u64(0xFFFFFFFFFFFFFFFFULL),
+        vdupq_n_u64(0xFFFFFFFEFFFFFFFFULL)
     };
     fe_arm64 t;
     add_arm64(t, a, p_limbs);
     sub_arm64(r, t, b);
 }
 
+/**
+ * @brief Multiplicação modular Secp256k1 otimizada para NEON.
+ */
 inline void mul_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
-    uint64x2_t acc[8] = { vmovq_n_u64(0) };
+    uint64x2_t acc[8] = { vdupq_n_u64(0) };
+    
+    // Unrolled 4x4 multiplication
     for (int i = 0; i < 4; ++i) {
+        uint64x2_t carry = vdupq_n_u64(0);
         for (int j = 0; j < 4; ++j) {
             uint64x2_t lo, hi;
             mul64x64_full(a[i], b[j], lo, hi);
             
             uint64x2_t old_acc = acc[i+j];
-            acc[i+j] = vaddq_u64(acc[i+j], lo);
-            uint64x2_t carry = vshrq_n_u64(vcltq_u64(acc[i+j], old_acc), 63);
-            
-            uint64x2_t hi_plus_carry = vaddq_u64(hi, carry);
-            int k = i + j + 1;
-            while (k < 8) {
-                uint64x2_t old_k = acc[k];
-                acc[k] = vaddq_u64(acc[k], hi_plus_carry);
-                uint64x2_t ck = vcltq_u64(acc[k], old_k);
-                if (vgetq_lane_u64(vorrq_u64(ck, vmovq_n_u64(0)), 0) == 0) break;
-                hi_plus_carry = vmovq_n_u64(1);
-                k++;
-            }
+            acc[i+j] = vaddq_u64(vaddq_u64(acc[i+j], lo), carry);
+            carry = vaddq_u64(hi, vshrq_n_u64(vcltq_u64(acc[i+j], old_acc), 63));
         }
+        acc[i+4] = carry;
     }
     
-    // Reduction
-    uint64x2_t c_val = vmovq_n_u64(977);
+    // Fast reduction for Secp256k1
+    // p = 2^256 - 2^32 - 977
+    uint64x2_t c_val = vdupq_n_u64(977);
     for (int i = 0; i < 4; ++i) {
         uint64x2_t h = acc[i+4];
         uint64x2_t p_lo, p_hi;
@@ -121,25 +142,22 @@ inline void mul_mod_arm64(fe_arm64& r, const fe_arm64& a, const fe_arm64& b) {
         uint64x2_t s_lo = vshlq_n_u64(h, 32);
         uint64x2_t s_hi = vshrq_n_u64(h, 32);
         
-        fe_arm64 to_add = { vmovq_n_u64(0) };
+        fe_arm64 to_add = { vdupq_n_u64(0) };
         to_add[0] = vaddq_u64(p_lo, s_lo);
-        uint64x2_t c0 = vshrq_n_u64(vcltq_u64(to_add[0], p_lo), 63);
-        to_add[1] = vaddq_u64(vaddq_u64(p_hi, s_hi), c0);
+        uint64x2_t carry0 = vshrq_n_u64(vcltq_u64(to_add[0], p_lo), 63);
+        to_add[1] = vaddq_u64(vaddq_u64(p_hi, s_hi), carry0);
         
-        fe_arm64 current_acc;
-        for(int l=0; l<4; ++l) current_acc[l] = acc[l];
-        add_arm64(current_acc, current_acc, to_add);
-        for(int l=0; l<4; ++l) acc[l] = current_acc[l];
+        add_arm64(acc, acc, to_add);
     }
 
-    for(int i=0; i<4; ++i) r[i] = acc[i];
+    r[0] = acc[0]; r[1] = acc[1]; r[2] = acc[2]; r[3] = acc[3];
 }
 
 inline void square_mod_arm64(fe_arm64& r, const fe_arm64& a) {
     mul_mod_arm64(r, a, a);
 }
 
-inline ProjectivePoint point_add_arm64(ProjectivePoint p1, ProjectivePoint p2) {
+inline ProjectivePoint point_add_arm64(const ProjectivePoint& p1, const ProjectivePoint& p2) {
     ProjectivePoint res;
     fe_arm64 z1_2, z2_2, u1, u2, s1, s2, h, r_val, h2, h3, u1h2;
 
