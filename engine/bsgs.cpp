@@ -29,6 +29,9 @@
 
 namespace bchaves::engine {
 
+using bchaves::core::bytes32_to_bigint;
+using bchaves::core::to_bytes32;
+
 namespace {
 
 // Signal handler - static linkage for safety, volatile sig_atomic_t for thread-safety

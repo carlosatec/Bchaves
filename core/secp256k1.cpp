@@ -19,47 +19,8 @@ namespace bchaves::core {
 namespace {
 
 void mul_wide_256(const BigInt& a, const BigInt& b, std::uint64_t out[8]) {
-#if defined(__x86_64__) && !defined(__clang__)
-    // TODO: Implementacao assembly incompleta - falta multiplicar os limbs 1,2,3 de 'a'
-    // O assembly atual apenas multiplica o primeiro limb (limb[0]) com todos os limbs de 'b'
-    // Precisamos adicionar os loops para limb[1], limb[2], limb[3] com devida propagacao de carry
-    // Por enquanto o fallback C++ (linha 59+) e utilizado
-    // Assembly x86_64 otimizado p/ CPUs sem MULX (Xeon Legacy)
-    // Utiliza r8-r15 para manter o estado intermediário e evitar spills
-    __asm__ __volatile__(
-        "movq 0(%1), %%rax\n\t"
-        "mulq 0(%2)\n\t"
-        "movq %%rax, 0(%0)\n\t"
-        "movq %%rdx, 8(%0)\n\t"
-        "xorq %%r8, %%r8\n\t"
-
-        "movq 0(%1), %%rax\n\t"
-        "mulq 8(%2)\n\t"
-        "addq %%rax, 8(%0)\n\t"
-        "adcq %%rdx, %%r8\n\t"
-        "movq %%r8, 16(%0)\n\t"
-        "xorq %%r9, %%r9\n\t"
-
-        "movq 0(%1), %%rax\n\t"
-        "mulq 16(%2)\n\t"
-        "addq %%rax, 16(%0)\n\t"
-        "adcq %%rdx, %%r9\n\t"
-        "movq %%r9, 24(%0)\n\t"
-        "xorq %%r10, %%r10\n\t"
-
-        "movq 0(%1), %%rax\n\t"
-        "mulq 24(%2)\n\t"
-        "addq %%rax, 24(%0)\n\t"
-        "adcq %%rdx, %%r10\n\t"
-        "movq %%r10, 32(%0)\n\t"
-
-        // Repetir para outros limbs de 'a' com propagação de carry...
-        // (Simplificado para o exemplo, mas implementando o loop completo de forma desenrolada)
-        :
-        : "r"(out), "r"(a.limbs.data()), "r"(b.limbs.data())
-        : "rax", "rdx", "r8", "r9", "r10", "r11", "cc", "memory"
-    );
-#endif
+    // Implementação C++ otimizada usando __int128 para performance portátil.
+    // Realiza multiplicação 256x256 -> 512 com propagação de carry.
     // Fallback/Implementação C++ (sempre inclusa para validação ou outras archs)
     for (std::size_t i = 0; i < 8; ++i) out[i] = 0;
     for (std::size_t i = 0; i < 4; ++i) {
@@ -618,11 +579,7 @@ BigInt mod_mul(const BigInt& a, const BigInt& b, const BigInt& p) {
     return reduce_wide_mod(wide, p);
 }
 
-std::array<std::uint8_t, 32> to_bytes32(const BigInt& value) {
-    std::array<std::uint8_t, 32> out{};
-    write_big_endian_32(value, out.data());
-    return out;
-}
+// to_bytes32 is now inline in secp256k1.hpp
 
 static BigInt parse_hex(const char* text) {
     BigInt out;

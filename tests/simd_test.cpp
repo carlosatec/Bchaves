@@ -5,9 +5,9 @@
  *            contra a implementação scalar de referência.
  */
 #include "core/secp256k1.hpp"
-#include "core/secp256k1-sse4.cpp"
-#include "core/secp256k1-avx2.cpp"
-#include "core/secp256k1-arm64.cpp"
+#include "core/secp256k1-sse4.hpp"
+#include "core/secp256k1-avx2.hpp"
+#include "core/secp256k1-arm64.hpp"
 
 #include <iostream>
 #include <cassert>

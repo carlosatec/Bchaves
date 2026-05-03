@@ -111,17 +111,9 @@ static constexpr size_t   TRAP_HEADER_SIZE = 4 + 4 + 32 + 32; // magic + version
 // ============================================================
 alignas(64) std::array<Jump, 64> g_jump_table;
 
-static bchaves::core::BigInt bytes32_to_bigint(const std::array<std::uint8_t, 32>& bytes) {
-    bchaves::core::BigInt out;
-    for (int i = 0; i < 4; ++i) {
-        std::uint64_t limb = 0;
-        for (int j = 0; j < 8; ++j) {
-            limb |= static_cast<std::uint64_t>(bytes[31 - (i * 8 + j)]) << (j * 8);
-        }
-        out.limbs[i] = limb;
-    }
-    return out;
-}
+// Conversion utilities moved to core/secp256k1.hpp
+using bchaves::core::bytes32_to_bigint;
+using bchaves::core::to_bytes32;
 
 static std::vector<std::array<std::uint8_t, 32>> snapshot_worker_states(
     const std::vector<std::unique_ptr<KangarooWorkerState>>& workers) {

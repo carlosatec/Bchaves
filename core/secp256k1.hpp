@@ -49,6 +49,28 @@ BigInt operator*(const BigInt& lhs, const BigInt& rhs);
 BigInt operator<<(const BigInt& value, std::size_t shift);
 BigInt operator>>(const BigInt& value, std::size_t shift);
 BigInt& operator+=(BigInt& lhs, const BigInt& rhs);
+// ============================================================
+// Conversion Utilities
+// ============================================================
+inline BigInt bytes32_to_bigint(const std::array<std::uint8_t, 32>& bytes) {
+    BigInt out;
+    const std::uint64_t* ptr = reinterpret_cast<const std::uint64_t*>(bytes.data());
+    out.limbs[3] = __builtin_bswap64(ptr[0]);
+    out.limbs[2] = __builtin_bswap64(ptr[1]);
+    out.limbs[1] = __builtin_bswap64(ptr[2]);
+    out.limbs[0] = __builtin_bswap64(ptr[3]);
+    return out;
+}
+
+inline std::array<std::uint8_t, 32> to_bytes32(const BigInt& val) {
+    std::array<std::uint8_t, 32> out;
+    std::uint64_t* ptr = reinterpret_cast<std::uint64_t*>(out.data());
+    ptr[0] = __builtin_bswap64(val.limbs[3]);
+    ptr[1] = __builtin_bswap64(val.limbs[2]);
+    ptr[2] = __builtin_bswap64(val.limbs[1]);
+    ptr[3] = __builtin_bswap64(val.limbs[0]);
+    return out;
+}
 BigInt& operator-=(BigInt& lhs, const BigInt& rhs);
 BigInt& operator++(BigInt& value);
 BigInt& operator--(BigInt& value);
