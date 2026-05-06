@@ -1,19 +1,36 @@
 {
   "_meta": {
-    "updated_at": "2026-05-02T23:55:00Z",
-    "version": "1.0"
+    "updated_at": "2026-05-06T14:09:00Z",
+    "version": "1.1"
   },
   "roles": {
-    "core/secp256k1-*.hpp": "SIMD optimized elliptic curve arithmetic kernels",
-    "core/secp256k1.cpp": "Scalar reference implementation of Secp256k1",
-    "core/sha256-*.cpp": "SIMD optimized SHA256 hashing",
-    "engine/kangaroo.cpp": "Pollard's Kangaroo search engine implementation",
-    "engine/bsgs.cpp": "Baby-step Giant-step search engine implementation",
-    "engine/address.cpp": "Hybrid address search engine implementation",
-    "system/hardware.cpp": "Hardware detection and auto-tuning logic",
-    "system/checkpoint.cpp": "Persistence and session recovery management",
-    "modulos/*.cpp": "Main entry points for engine binaries",
-    "core/adaptive_filter.cpp": "Cuckoo Filter dispatcher and base management",
-    "core/adaptive_filter_*.cpp": "SIMD optimized Cuckoo Filter lookup kernels"
+    "core/secp256k1.cpp": "Scalar reference implementation of Secp256k1 (39 KB, largest core file)",
+    "core/secp256k1-*.hpp": "SIMD optimized elliptic curve arithmetic kernels (SSE4, AVX2, AVX-512, ARM64)",
+    "core/secp256k1_fleet.hpp": "Structure-of-Arrays (SoA) fleet layout for vectorized Kangaroo operations (1024 lanes)",
+    "core/secp256k1_reduce.hpp": "Modular reduction constants for field prime",
+    "core/hash.cpp": "SHA-256 + RIPEMD-160 multi-ISA dispatch with runtime kernel selection",
+    "core/sha256-*.cpp": "SIMD optimized SHA-256 hashing (SSE4, AVX, AVX2, AVX-512, ARM64 Crypto)",
+    "core/ripemd160-*.cpp": "SIMD optimized RIPEMD-160 hashing (SSE4, AVX2, NEON)",
+    "core/adaptive_filter.cpp": "AdaptiveCuckooFilter dispatcher and base management with runtime ISA selection",
+    "core/adaptive_filter_*.cpp": "SIMD optimized Cuckoo Filter batch lookup kernels with manual prefetching",
+    "core/bitcoin_format.cpp": "Bitcoin address formatting: WIF encoding, Base58Check, pubkey compression (renamed from core/address.cpp in Phase 11)",
+    "core/base58.cpp": "Base58 encoding and decoding",
+    "core/cuckoo.hpp": "Low-level Cuckoo hash primitives",
+    "core/hash_table.hpp": "BSGS hash table implementation",
+    "engine/kangaroo.cpp": "Pollard's Kangaroo search engine with fleet SIMD, distinguished points, trap persistence (39 KB)",
+    "engine/bsgs.cpp": "Baby-step Giant-step search engine with GLV decomposition",
+    "engine/address.cpp": "Hybrid multi-mode address search with endomorphism fusion and chunked processing (44 KB)",
+    "engine/app.cpp": "Shared engine initialization (hardware detection, banner, target loading)",
+    "system/hardware.cpp": "CPU feature detection, cache topology, NUMA detection, thread affinity (pin_thread_to_core, pin_thread_to_node)",
+    "system/checkpoint.cpp": "Binary checkpoint persistence with CRC32 integrity validation",
+    "system/cli.cpp": "CLI argument parsing for all 3 engine modes",
+    "system/targets.cpp": "Multi-format Bitcoin target file parsing",
+    "system/format.cpp": "Telemetry formatting (throughput, ETA, memory usage)",
+    "system/types.hpp": "Core type definitions: HardwareInfo, CommonOptions, CheckpointState",
+    "modulos/*.cpp": "Main entry points for engine binaries (thin wrappers)",
+    "tests/crypto_test.cpp": "73 unit tests covering EC, hashing, encoding, checkpoint roundtrip",
+    "tests/simd_test.cpp": "SIMD kernel structural validation",
+    "tests/test_cuckoo_adaptive.cpp": "AdaptiveCuckooFilter test suite",
+    "tests/stress_test.cpp": "Multi-threaded signal handling stress test (Phase 11)"
   }
 }

@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "updated_at": "2026-05-02T00:07:00Z"
+    "updated_at": "2026-05-06T14:09:00Z"
   },
   "decisions": [
     {
@@ -44,6 +44,30 @@
       "title": "Universal ARM64 Detection (Linux/macOS)",
       "status": "Accepted",
       "rationale": "Implements platform-specific detection (getauxval for Linux, sysctlbyname for macOS) to ensure optimal kernel selection on both cloud servers and workstations."
+    },
+    {
+      "id": "ADR-008",
+      "title": "Rename core/address to core/bitcoin_format",
+      "status": "Accepted",
+      "rationale": "Eliminates naming collision with engine/address.cpp. The core module handles Bitcoin formatting (WIF, Base58Check, pubkey compression), not search logic."
+    },
+    {
+      "id": "ADR-009",
+      "title": "CRC32 Checkpoint Integrity",
+      "status": "Accepted",
+      "rationale": "Prevents loading corrupted checkpoint files which could cause silent search range miscalculation or data corruption."
+    },
+    {
+      "id": "ADR-010",
+      "title": "NUMA-Aware Thread Pinning",
+      "status": "Accepted",
+      "rationale": "pin_thread_to_node supplements pin_thread_to_core for multi-socket systems, reducing cross-node memory access latency on cloud instances."
+    },
+    {
+      "id": "ADR-011",
+      "title": "Manual Prefetching in Cuckoo Filter Kernels",
+      "status": "Accepted",
+      "rationale": "Compiler auto-prefetch is insufficient for the irregular memory access patterns of Cuckoo hash lookups. Manual _mm_prefetch with i+1 distance was added in Phase 11; Phase 12 plans to extend to distance 4-8."
     }
   ]
 }

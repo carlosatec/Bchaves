@@ -1,22 +1,42 @@
 {
   "_meta": {
-    "updated_at": "2026-05-02T23:55:00Z"
+    "updated_at": "2026-05-06T14:09:00Z"
   },
   "patterns": [
     {
       "name": "Static-Performance Dispatch",
       "description": "Initialization-time selection of the best available function pointer based on CPUID/HWCAP. Eliminates runtime branching in hot loops.",
-      "usage": "Used in AdaptiveCuckooFilter and Hash dispatcher."
+      "usage": "Used in AdaptiveCuckooFilter (CuckooKernel struct), Hash dispatcher (SHA-256/RIPEMD-160), and Secp256k1 backend selection."
     },
     {
       "name": "Batch-SIMD Processing",
       "description": "Grouping independent operations (like 4 or 8 hashes) into a single SIMD pipeline to maximize throughput instead of trying to parallelize a single operation.",
-      "usage": "Used in SHA256-AVX2, RIPEMD160-NEON, and Adaptive Filter lookup."
+      "usage": "Used in SHA256-AVX2, RIPEMD160-NEON, Adaptive Filter batch lookup, and batch_normalize for Jacobian-to-Affine conversion."
     },
     {
       "name": "Hardware-Aware Auto-Tune",
       "description": "Scaling engine parameters (batch size, thread count) based on the detected ISA level and cache hierarchy.",
-      "usage": "Implemented in system/hardware.cpp and engine/app.cpp."
+      "usage": "Implemented in system/hardware.cpp (detect_hardware), engine/app.cpp (auto-tune profiles: safe/balanced/max)."
+    },
+    {
+      "name": "ISA-Per-File Separation",
+      "description": "Each ISA variant gets its own .cpp/.hpp file instead of #ifdef blocks within a single file. Improves readability and compile-time isolation.",
+      "usage": "All SIMD kernels: sha256-{sse4,avx,avx2,avx512,arm64}.cpp, ripemd160-{sse4,avx2,neon}.cpp, secp256k1-{sse4,avx2,avx512,arm64}.hpp, adaptive_filter_{avx2,avx512,sse4,neon}.cpp."
+    },
+    {
+      "name": "Manual Prefetching",
+      "description": "Explicit _mm_prefetch / __builtin_prefetch instructions in SIMD batch lookup loops to hide memory latency for irregular access patterns.",
+      "usage": "Introduced in Phase 11 in adaptive_filter_{avx2,avx512,sse4,neon}.cpp with distance i+1. Phase 12 plans to extend to distance 4-8."
+    },
+    {
+      "name": "Atomic Signal Handling",
+      "description": "std::atomic<bool> flags (g_stop_requested) for cooperative shutdown. Signal handler sets flag, worker threads poll it each iteration.",
+      "usage": "All three engines (kangaroo.cpp, bsgs.cpp, address.cpp). Checkpoint save triggered in main thread after signal, not in handler."
+    },
+    {
+      "name": "Structure-of-Arrays (SoA) Fleet",
+      "description": "Kangaroo fleet stores point coordinates in SoA layout (separate arrays for x[0..3], y[0..3]) instead of AoS, enabling SIMD-width operations across all fleet members simultaneously.",
+      "usage": "core/secp256k1_fleet.hpp defines FleetState with 1024-lane SoA. engine/kangaroo.cpp processes fleet in SIMD batches."
     }
   ]
 }

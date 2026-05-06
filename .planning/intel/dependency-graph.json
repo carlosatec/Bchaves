@@ -1,12 +1,13 @@
 {
   "_meta": {
-    "updated_at": "2026-05-02T00:07:00Z"
+    "updated_at": "2026-05-06T14:09:00Z"
   },
   "nodes": [
-    { "id": "core", "type": "library" },
-    { "id": "system", "type": "library" },
-    { "id": "engine", "type": "orchestrator" },
-    { "id": "modulos", "type": "binary" }
+    { "id": "core", "type": "library", "description": "Cryptographic primitives, zero OS deps" },
+    { "id": "system", "type": "library", "description": "Platform abstraction (hardware, CLI, checkpoint, I/O)" },
+    { "id": "engine", "type": "orchestrator", "description": "Search algorithms (Address, BSGS, Kangaroo)" },
+    { "id": "modulos", "type": "binary", "description": "Entry points (main() wrappers)" },
+    { "id": "tests", "type": "test", "description": "Test suite (crypto, SIMD, cuckoo, stress)" }
   ],
   "edges": [
     { "from": "modulos", "to": "engine" },
@@ -14,6 +15,18 @@
     { "from": "modulos", "to": "system" },
     { "from": "engine", "to": "core" },
     { "from": "engine", "to": "system" },
-    { "from": "system", "to": "core" }
-  ]
+    { "from": "system", "to": "core" },
+    { "from": "tests", "to": "core" },
+    { "from": "tests", "to": "system" }
+  ],
+  "key_files": {
+    "core/secp256k1.cpp": ["core/secp256k1.hpp", "core/secp256k1_reduce.hpp", "core/secp256k1-sse4.hpp", "core/secp256k1-avx2.hpp", "core/secp256k1-avx512.hpp", "core/secp256k1-arm64.hpp"],
+    "core/hash.cpp": ["core/hash.hpp", "core/simd_hashing.hpp", "core/sha256-sse4.cpp", "core/sha256-avx.cpp", "core/sha256-avx2.cpp", "core/sha256-avx512.cpp", "core/sha256-arm64.cpp"],
+    "core/adaptive_filter.cpp": ["core/adaptive_filter.hpp", "core/adaptive_filter_avx2.cpp", "core/adaptive_filter_avx512.cpp", "core/adaptive_filter_sse4.cpp", "core/adaptive_filter_neon.cpp"],
+    "core/bitcoin_format.cpp": ["core/bitcoin_format.hpp", "core/base58.cpp", "core/base58.hpp"],
+    "engine/kangaroo.cpp": ["core/secp256k1_fleet.hpp", "core/cuckoo.hpp", "system/checkpoint.hpp"],
+    "engine/address.cpp": ["core/adaptive_filter.hpp", "core/bitcoin_format.hpp"],
+    "engine/bsgs.cpp": ["core/hash_table.hpp"],
+    "system/hardware.cpp": ["system/hardware.hpp", "system/types.hpp"]
+  }
 }
