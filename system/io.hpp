@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "core/address.hpp"
+#include "core/bitcoin_format.hpp"
 #include <string>
 
 namespace bchaves::system {

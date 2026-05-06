@@ -46,6 +46,10 @@ void batch_lookup_avx2(const uint16_t* buckets, size_t mask, const uint16_t* fps
     // Em AVX2 poderíamos processar 2 itens completos (4 buckets) se os dados estivessem alinhados,
     // mas o ganho principal vem da eliminação de branches no lookup_avx2.
     for (size_t i = 0; i < count; ++i) {
+        if (i + 1 < count) {
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i1s[i+1] * 4]), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i2s[i+1] * 4]), _MM_HINT_T0);
+        }
         results[i] = lookup_avx2(buckets, mask, fps[i], i1s[i], i2s[i]);
     }
 }

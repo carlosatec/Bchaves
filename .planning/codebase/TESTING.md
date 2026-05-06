@@ -1,13 +1,20 @@
-# Testing Strategy
+---
+last_mapped_date: 2026-05-02
+---
+# Testing
 
-## Unit Tests
-- **Crypto Kernel**: Validação de todas as operações de Secp256k1 (adição, doubling, multiplicação escalar) contra vetores de teste conhecidos e a implementação `secp256k1.c` (libsecp256k1).
-- **SIMD Validation**: Teste específico para garantir que cada instrução intrínseca produz o mesmo resultado que a lógica escalar correspondente.
+## Framework & Execution
+- The project implements its own bespoke testing binaries rather than relying on a heavy framework like GoogleTest.
+- Tests are executed via `make test`, which builds and runs the test executables sequentially.
 
-## Integration Tests
-- **End-to-End Search**: Execução de buscas em intervalos pequenos conhecidos para garantir que o motor encontra a chave privada correta.
-- **Persistence Test**: Ciclos de interrupção e retomada para validar a integridade dos checkpoints.
+## Test Binaries
+1. **`crypto_test` (`tests/crypto_test.cpp`)**:
+   - Validates the base mathematical correctness of the custom `secp256k1` arithmetic.
+   - Ensures scalar multiplication matches expected public keys.
+2. **`simd_test` (`tests/simd_test.cpp`)**:
+   - Ensures that the various parallelized SIMD hashing routines (SSE4, AVX2, AVX512, NEON) produce identical outputs to the baseline scalar reference.
+3. **`cuckoo_test` (`tests/test_cuckoo_adaptive.cpp`)**:
+   - Validates the high-speed collision filtering logic and memory management.
 
-## Benchmarking
-- **Throughput Tracks**: Medição de Keys per Second (K/s) ou Million Keys per Second (M/s) para cada backend.
-- **Heat Analysis**: Identificação de gargalos em aritmética modular vs hashing vs memória.
+## Coverage
+Coverage primarily focuses on data integrity (cryptographic correctness) and hardware-specific path equivalency. System integration tests (e.g., verifying a full kangaroo search end-to-end) appear to be managed manually via CLI testing.

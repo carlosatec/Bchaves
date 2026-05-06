@@ -41,8 +41,11 @@ bool lookup_avx512(const uint16_t* buckets, size_t mask, uint16_t fp, size_t i1,
  */
 __attribute__((target("avx512vl,avx512bw,avx512f")))
 void batch_lookup_avx512(const uint16_t* buckets, size_t mask, const uint16_t* fps, const size_t* i1s, const size_t* i2s, bool* results, size_t count) {
-    // Processamento em lote usando o kernel otimizado
     for (size_t i = 0; i < count; ++i) {
+        if (i + 1 < count) {
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i1s[i+1] * 4]), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i2s[i+1] * 4]), _MM_HINT_T0);
+        }
         results[i] = lookup_avx512(buckets, mask, fps[i], i1s[i], i2s[i]);
     }
 }

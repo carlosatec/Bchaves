@@ -9,7 +9,7 @@
  * License:    MIT (c) 2026
  */
 #include "core/secp256k1.hpp"
-#include "core/address.hpp"
+#include "core/bitcoin_format.hpp"
 #include "core/hash.hpp"
 #include "system/checkpoint.hpp"
 #include "system/cli.hpp"

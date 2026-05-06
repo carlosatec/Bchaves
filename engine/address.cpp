@@ -9,7 +9,7 @@
  */
 #include "engine/app.hpp"
 
-#include "core/address.hpp"
+#include "core/bitcoin_format.hpp"
 #include "core/secp256k1.hpp"
 #include "system/checkpoint.hpp"
 #include "system/format.hpp"

@@ -685,6 +685,25 @@ bool pin_thread_to_core(std::uint32_t core_id) {
 #endif
 }
 
+bool pin_thread_to_node(std::uint32_t node_id) {
+#if defined(_WIN32)
+    GROUP_AFFINITY groupAffinity;
+    memset(&groupAffinity, 0, sizeof(groupAffinity));
+    groupAffinity.Group = static_cast<WORD>(node_id);
+    groupAffinity.Mask = static_cast<KAFFINITY>(-1);
+    return SetThreadGroupAffinity(GetCurrentThread(), &groupAffinity, nullptr) != 0;
+#elif defined(__linux__) && defined(__NUMA_AVAILABLE__)
+    // Simplification for Linux without linking libnuma: fallback to pinning to cores of that node.
+    // In a real scenario, numa_run_on_node or sched_setaffinity with the node's cpumask is used.
+    // Assuming node_id * cores_per_node is a basic heuristic if no better topology info exists.
+    (void)node_id;
+    return false;
+#else
+    (void)node_id;
+    return false;
+#endif
+}
+
 void pin_all_threads(std::uint32_t num_threads) {
     for (std::uint32_t i = 0; i < num_threads; ++i) {
         pin_thread_to_core(i);

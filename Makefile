@@ -28,7 +28,7 @@ ENGINE_SOURCES = \
 	engine/app.cpp
 
 COMMON_SOURCES = \
-	core/address.cpp \
+	core/bitcoin_format.cpp \
 	core/base58.cpp \
 	core/hash.cpp \
 	core/secp256k1.cpp \
@@ -57,10 +57,11 @@ all: address bsgs kangaroo
 address: $(BUILD_DIR)/address
 bsgs: $(BUILD_DIR)/bsgs
 kangaroo: $(BUILD_DIR)/kangaroo
-test: $(BUILD_DIR)/crypto_test $(BUILD_DIR)/simd_test $(BUILD_DIR)/cuckoo_test
+test: $(BUILD_DIR)/crypto_test $(BUILD_DIR)/simd_test $(BUILD_DIR)/cuckoo_test $(BUILD_DIR)/stress_test
 	$(BUILD_DIR)/crypto_test
 	$(BUILD_DIR)/simd_test
 	$(BUILD_DIR)/cuckoo_test
+	$(BUILD_DIR)/stress_test
 
 $(BUILD_DIR)/address: modulos/address.cpp $(ENGINE_SOURCES) $(COMMON_SOURCES) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) modulos/address.cpp $(ENGINE_SOURCES) $(COMMON_SOURCES) -o $@
@@ -79,6 +80,9 @@ $(BUILD_DIR)/simd_test: tests/simd_test.cpp $(COMMON_SOURCES) | $(BUILD_DIR)
 
 $(BUILD_DIR)/cuckoo_test: tests/test_cuckoo_adaptive.cpp $(COMMON_SOURCES) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) tests/test_cuckoo_adaptive.cpp $(COMMON_SOURCES) -o $@
+
+$(BUILD_DIR)/stress_test: tests/stress_test.cpp $(COMMON_SOURCES) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) tests/stress_test.cpp $(COMMON_SOURCES) -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

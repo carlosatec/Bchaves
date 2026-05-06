@@ -1,40 +1,40 @@
-# Project Structure
+---
+last_mapped_date: 2026-05-02
+---
+# Directory Structure
 
-## Directory Overview
+- `core/`
+  Contains all the cryptographic primitives, mathematical algorithms, and SIMD filters. This is the "hot path" of the application. Includes:
+  - `secp256k1*`: Elliptic curve arithmetic kernels (scalar, AVX2, AVX512, SSE4, ARM64).
+  - `sha256*`, `ripemd160*`: SIMD hashing implementations.
+  - `adaptive_filter*`, `cuckoo.hpp`: High-speed memory filtering mechanisms.
 
-### `/core`
-Contém as primitivas criptográficas e aritmética de campo.
-- `secp256k1.cpp/hpp`: Implementação escalar de referência.
-- `secp256k1-*.hpp`: Versões otimizadas via SIMD (SSE, AVX, ARM64).
-- `secp256k1_reduce.hpp`: Helpers de redução modular rápida.
-- `hash.cpp/hpp`: Wrapper de funções de hash.
-- `sha256-*.cpp`: Implementações SIMD de SHA256.
-- `ripemd160-*.cpp`: Implementações SIMD de RIPEMD160.
-- `adaptive_filter.cpp/hpp`: Despachante de filtragem multi-alvo.
-- `adaptive_filter_*.cpp`: Kernels SIMD (AVX512, AVX2, SSE4, NEON).
+- `engine/`
+  Contains the high-level orchestration logic for the different search strategies:
+  - `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`, `app.cpp`.
 
-### `/engine`
-Implementação dos algoritmos de busca.
-- `address.cpp`: Motor de busca por endereços (Hybrid mode).
-- `bsgs.cpp`: Motor Baby-step Giant-step para busca em intervalos.
-- `kangaroo.cpp`: Motor Pollard's Kangaroo para busca em intervalos grandes.
-- `app.cpp`: Orquestrador de threads e ciclo de vida do motor.
+- `system/`
+  Contains all Operating System and hardware interaction wrappers:
+  - `cli.cpp`: Command line argument parsing.
+  - `hardware.cpp`: CPU architecture and capability detection.
+  - `checkpoint.cpp`: Progress saving and loading logic.
+  - `targets.cpp`, `io.cpp`: File reading and writing.
 
-### `/system`
-Abstrações de hardware e sistema operacional.
-- `hardware.cpp`: Detecção de CPU, topologia e capacidades SIMD.
-- `cli.cpp`: Parsing de argumentos de linha de comando.
-- `checkpoint.cpp`: Persistência de estado e recuperação de sessão.
-- `io.cpp`: Gerenciamento de arquivos de traps e logs.
-- `types.hpp`: Definição de tipos globais e constantes.
+- `tests/`
+  Unit test suites for verifying cryptographic correctness and SIMD implementation equivalency:
+  - `crypto_test.cpp`, `simd_test.cpp`, `test_cuckoo_adaptive.cpp`.
 
-### `/modulos`
-Pontos de entrada (main) para os diferentes alvos de binário.
-- `address.cpp`, `bsgs.cpp`, `kangaroo.cpp`.
+- `modulos/`
+  Entry-point templates (e.g. `modulos/address.cpp`) that wrap the engine execution for the generated binaries.
 
-### `/tests`
-Suítes de validação.
-- `crypto_test.cpp`: Testes de corretude escalar.
-- `simd_test.cpp`: Validação de kernels SIMD contra referência.
-- `test_cuckoo_adaptive.cpp`: Validação do filtro probabilístico SIMD.
-- `test_crypto_arm64.cpp`: Validação de kernels de hardware ARMv8.
+- `doc/`
+  Markdown documentation files detailing the project's architecture, setup, and usage.
+
+- `traps/`
+  (Likely empty or data dir) Directory for storing Pollard's Kangaroo trap points.
+
+- `scratch/`
+  Temporary development files.
+
+- `build/`
+  Output directory for compiled object files and final binaries.

@@ -7,7 +7,7 @@
  * Author:     Carlos
  * License:    MIT (c) 2026
  */
-#include "core/address.hpp"
+#include "core/bitcoin_format.hpp"
 
 #include "core/hash.hpp"
 #include "core/ripemd160.hpp"

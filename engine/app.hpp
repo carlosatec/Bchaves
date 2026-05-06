@@ -10,7 +10,7 @@
 #pragma once
 
 #include "system/types.hpp"
-#include "core/address.hpp"
+#include "core/bitcoin_format.hpp"
 #include "system/hardware.hpp"
 #include "system/targets.hpp"
 #include "system/format.hpp"
