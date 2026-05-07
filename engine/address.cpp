@@ -70,7 +70,7 @@ static uint64_t find_coprime_step(uint64_t n) {
 }
 
 // ===== HYBRID: estado global atômico =====
-static std::atomic<uint64_t> g_chunk_counter{0};
+alignas(64) static std::atomic<uint64_t> g_chunk_counter{0};
 static uint64_t g_hybrid_chunk_size   = 0;
 static uint64_t g_hybrid_total_chunks = 0;
 static uint64_t g_chunk_step          = 0;

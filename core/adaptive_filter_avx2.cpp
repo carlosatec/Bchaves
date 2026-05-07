@@ -42,13 +42,19 @@ bool lookup_avx2(const uint16_t* buckets, size_t mask, uint16_t fp, size_t i1, s
  */
 __attribute__((target("avx2")))
 void batch_lookup_avx2(const uint16_t* buckets, size_t mask, const uint16_t* fps, const size_t* i1s, const size_t* i2s, bool* results, size_t count) {
-    // Por enquanto processa sequencialmente usando o kernel individual otimizado.
-    // Em AVX2 poderíamos processar 2 itens completos (4 buckets) se os dados estivessem alinhados,
-    // mas o ganho principal vem da eliminação de branches no lookup_avx2.
+    constexpr size_t kPrefetchDist = 8;
+
+    // Estágio 1: Pré-aquecer cache para os primeiros kPrefetchDist elementos
+    for (size_t i = 0; i < count && i < kPrefetchDist; ++i) {
+        _mm_prefetch(reinterpret_cast<const char*>(&buckets[i1s[i] * 4]), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char*>(&buckets[i2s[i] * 4]), _MM_HINT_T0);
+    }
+
+    // Estágio 2+3: Processar com prefetch avançado (distância 8)
     for (size_t i = 0; i < count; ++i) {
-        if (i + 1 < count) {
-            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i1s[i+1] * 4]), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i2s[i+1] * 4]), _MM_HINT_T0);
+        if (i + kPrefetchDist < count) {
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i1s[i + kPrefetchDist] * 4]), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(&buckets[i2s[i + kPrefetchDist] * 4]), _MM_HINT_T0);
         }
         results[i] = lookup_avx2(buckets, mask, fps[i], i1s[i], i2s[i]);
     }

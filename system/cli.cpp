@@ -77,6 +77,18 @@ void parse_common_flag(const std::string& arg, int argc, char** argv, int& index
         options.checkpoint_enabled = false;
     } else if (arg == "--secp256k1-backend") {
         options.secp256k1_backend = parse_secp256k1_backend(require_value(argc, argv, index, arg));
+    } else if (arg == "--max-ram") {
+        std::string val = require_value(argc, argv, index, arg);
+        if (!val.empty()) {
+            char suffix = std::toupper(static_cast<unsigned char>(val.back()));
+            if (suffix == 'G') {
+                options.max_ram_mb = std::stoull(val.substr(0, val.size() - 1)) * 1024;
+            } else if (suffix == 'M') {
+                options.max_ram_mb = std::stoull(val.substr(0, val.size() - 1));
+            } else {
+                options.max_ram_mb = std::stoull(val);
+            }
+        }
     } else if (arg == "--list-hardware") {
         HardwareInfo hw = detect_hardware();
         
@@ -272,6 +284,7 @@ std::string address_help() {
            "  --benchmark   sem checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
+           "  --max-ram <n>  limite de RAM (ex: 16G, 4096M)\n"
            "  --no-checkpoint\n"
            "  --no-endo      desabilita otimizacao endomorfismo\n";
 }
@@ -286,6 +299,7 @@ std::string bsgs_help() {
            "  --benchmark    executa sem gravar checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
+           "  --max-ram <n>  limite de RAM (ex: 16G, 4096M)\n"
            "  --no-checkpoint\n"
            "  --checkpoint-interval <segundos>\n";
 }
@@ -303,6 +317,7 @@ std::string kangaroo_help() {
            "  --benchmark    executa sem gravar checkpoint/found.txt\n"
            "  --secp256k1-backend <b> auto|portable\n"
            "  -c <arquivo>   checkpoint especifico\n"
+           "  --max-ram <n>  limite de RAM (ex: 16G, 4096M)\n"
            "  --trap-dir <caminho> diretorio de armadilhas persistidas (default: traps/)\n"
            "  --no-checkpoint\n"
            "  --checkpoint-interval <segundos>\n";

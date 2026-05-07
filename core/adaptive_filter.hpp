@@ -50,6 +50,19 @@ public:
     // Busca em Lote (SIMD-Optimized)
     void lookup_batch(const uint8_t* hash160_batch, bool* results, size_t count) const;
 
+    // Sobrecargas para uint64_t (compatibilidade com sistema de armadilhas)
+    bool insert(uint64_t val) {
+        uint8_t buf[20] = {0};
+        std::memcpy(buf, &val, 8);
+        return insert(buf);
+    }
+
+    bool lookup(uint64_t val) const {
+        uint8_t buf[20] = {0};
+        std::memcpy(buf, &val, 8);
+        return lookup(buf);
+    }
+
     size_t size() const { return m_count; }
     size_t capacity() const { return m_capacity_pow2 * kEntriesPerBucket; }
 
@@ -58,6 +71,8 @@ private:
     size_t m_capacity_pow2 = 0;
     size_t m_bucket_mask = 0;
     size_t m_count = 0;
+    size_t m_alloc_size = 0;
+    bool m_use_huge_pages = false;
     CuckooKernel m_kernel;
 
     // Inicializa os kernels baseado nas features da CPU

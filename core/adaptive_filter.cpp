@@ -8,6 +8,7 @@
  * License:    MIT (c) 2026
  */
 #include "core/adaptive_filter.hpp"
+#include "system/hardware.hpp"
 #include <cstdlib>
 #include <algorithm>
 
@@ -48,15 +49,24 @@ AdaptiveCuckooFilter::AdaptiveCuckooFilter(size_t num_items, const system::Hardw
     while (m_capacity_pow2 < num_buckets) m_capacity_pow2 <<= 1;
     m_bucket_mask = m_capacity_pow2 - 1;
     
-    // Alocação alinhada (64 bytes para cache line)
-    size_t total_size = m_capacity_pow2 * kBucketSize;
+    // Alocação via HugePages (fallback transparente para alocação normal)
+    // Adicionamos 64 bytes de padding para evitar SIMD read overflow no final do buffer
+    size_t total_size = (m_capacity_pow2 * kBucketSize) + 64;
+    m_alloc_size = total_size;
+    m_buckets = static_cast<uint16_t*>(bchaves::system::allocate_huge_pages(total_size));
+    if (!m_buckets) {
+        // Fallback final: alocação convencional
 #if defined(_WIN32)
-    m_buckets = static_cast<uint16_t*>(_aligned_malloc(total_size, 64));
+        m_buckets = static_cast<uint16_t*>(_aligned_malloc(total_size, 64));
 #else
-    if (posix_memalign(reinterpret_cast<void**>(&m_buckets), 64, total_size) != 0) {
-        m_buckets = nullptr;
-    }
+        if (posix_memalign(reinterpret_cast<void**>(&m_buckets), 64, total_size) != 0) {
+            m_buckets = nullptr;
+        }
 #endif
+        m_use_huge_pages = false;
+    } else {
+        m_use_huge_pages = true;
+    }
     
     if (m_buckets) {
         std::memset(m_buckets, 0, total_size);
@@ -70,11 +80,15 @@ AdaptiveCuckooFilter::AdaptiveCuckooFilter(size_t num_items, const system::Hardw
 
 AdaptiveCuckooFilter::~AdaptiveCuckooFilter() {
     if (m_buckets) {
+        if (m_use_huge_pages) {
+            bchaves::system::free_huge_pages(m_buckets, m_alloc_size);
+        } else {
 #if defined(_WIN32)
-        _aligned_free(m_buckets);
+            _aligned_free(m_buckets);
 #else
-        free(m_buckets);
+            free(m_buckets);
 #endif
+        }
     }
 }
 

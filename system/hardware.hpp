@@ -19,4 +19,8 @@ bool pin_thread_to_core(std::uint32_t core_id);
 bool pin_thread_to_node(std::uint32_t node_id);
 void pin_all_threads(std::uint32_t num_threads);
 
+// HugePages allocation — transparente com fallback para alocação normal
+void* allocate_huge_pages(std::size_t size_bytes);
+void  free_huge_pages(void* ptr, std::size_t size_bytes);
+
 }  // namespace bchaves::system

@@ -47,10 +47,17 @@ bool lookup_neon(const uint16_t* buckets, size_t mask, uint16_t fp, size_t i1, s
  * @brief Busca em lote otimizada para NEON.
  */
 void batch_lookup_neon(const uint16_t* buckets, size_t mask, const uint16_t* fps, const size_t* i1s, const size_t* i2s, bool* results, size_t count) {
+    constexpr size_t kPrefetchDist = 8;
+
+    for (size_t i = 0; i < count && i < kPrefetchDist; ++i) {
+        __builtin_prefetch(&buckets[i1s[i] * 4], 0, 3);
+        __builtin_prefetch(&buckets[i2s[i] * 4], 0, 3);
+    }
+
     for (size_t i = 0; i < count; ++i) {
-        if (i + 1 < count) {
-            __builtin_prefetch(&buckets[i1s[i+1] * 4], 0, 0); // read, low locality
-            __builtin_prefetch(&buckets[i2s[i+1] * 4], 0, 0);
+        if (i + kPrefetchDist < count) {
+            __builtin_prefetch(&buckets[i1s[i + kPrefetchDist] * 4], 0, 3);
+            __builtin_prefetch(&buckets[i2s[i + kPrefetchDist] * 4], 0, 3);
         }
         results[i] = lookup_neon(buckets, mask, fps[i], i1s[i], i2s[i]);
     }

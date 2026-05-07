@@ -23,6 +23,8 @@
 #include <sys/sysinfo.h>
 #include <sched.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -503,6 +505,28 @@ std::uint32_t detect_memory_gen() {
     return gen;
 }
 
+std::uint64_t get_linux_cgroup_limit() {
+    // Cgroup v2
+    std::ifstream v2("/sys/fs/cgroup/memory.max");
+    if (v2.is_open()) {
+        std::string val;
+        v2 >> val;
+        if (val != "max") {
+            try { return std::stoull(val); } catch(...) {}
+        }
+    }
+    // Cgroup v1
+    std::ifstream v1("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+    if (v1.is_open()) {
+        try {
+            uint64_t limit;
+            v1 >> limit;
+            if (limit < 0x7FFFFFFFFFFFF000ULL) return limit;
+        } catch(...) {}
+    }
+    return 0;
+}
+
 std::uint64_t detect_total_ram() {
 #if defined(_WIN32)
     MEMORYSTATUSEX status{};
@@ -511,10 +535,29 @@ std::uint64_t detect_total_ram() {
         return static_cast<std::uint64_t>(status.ullTotalPhys);
     }
 #elif defined(__linux__)
-    struct sysinfo info {};
-    if (sysinfo(&info) == 0) {
-        return static_cast<std::uint64_t>(info.totalram) * info.mem_unit;
+    uint64_t total = 0;
+    std::ifstream meminfo("/proc/meminfo");
+    if (meminfo.is_open()) {
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.find("MemTotal:") != std::string::npos) {
+                std::stringstream ss(line.substr(line.find(':') + 1));
+                uint64_t total_kb = 0;
+                ss >> total_kb;
+                total = total_kb * 1024ULL;
+                break;
+            }
+        }
     }
+    if (total == 0) {
+        struct sysinfo info {};
+        if (sysinfo(&info) == 0) {
+            total = static_cast<std::uint64_t>(info.totalram) * info.mem_unit;
+        }
+    }
+    uint64_t cgroup = get_linux_cgroup_limit();
+    if (cgroup > 0 && cgroup < total) total = cgroup;
+    return total;
 #endif
     return 0;
 }
@@ -527,10 +570,45 @@ std::uint64_t detect_available_ram() {
         return static_cast<std::uint64_t>(status.ullAvailPhys);
     }
 #elif defined(__linux__)
-    struct sysinfo info {};
-    if (sysinfo(&info) == 0) {
-        return static_cast<std::uint64_t>(info.freeram) * info.mem_unit;
+    uint64_t available = 0;
+    std::ifstream meminfo("/proc/meminfo");
+    if (meminfo.is_open()) {
+        std::string line;
+        uint64_t free_kb = 0, buffers_kb = 0, cached_kb = 0;
+        while (std::getline(meminfo, line)) {
+            if (line.find("MemAvailable:") != std::string::npos) {
+                std::stringstream ss(line.substr(line.find(':') + 1));
+                uint64_t available_kb = 0;
+                ss >> available_kb;
+                available = available_kb * 1024ULL;
+                break;
+            }
+            if (line.find("MemFree:") != std::string::npos) {
+                std::stringstream ss(line.substr(line.find(':') + 1));
+                ss >> free_kb;
+            } else if (line.find("Buffers:") != std::string::npos) {
+                std::stringstream ss(line.substr(line.find(':') + 1));
+                ss >> buffers_kb;
+            } else if (line.find("Cached:") != std::string::npos) {
+                std::stringstream ss(line.substr(line.find(':') + 1));
+                ss >> cached_kb;
+            }
+        }
+        if (available == 0 && free_kb > 0) {
+            available = (free_kb + buffers_kb + cached_kb) * 1024ULL;
+        }
     }
+    if (available == 0) {
+        struct sysinfo info {};
+        if (sysinfo(&info) == 0) {
+            available = static_cast<std::uint64_t>(info.freeram + info.bufferram) * info.mem_unit;
+        }
+    }
+    // Ajustar pelo cgroup se necessario
+    uint64_t total = detect_total_ram();
+    if (available > total) available = total;
+
+    return available;
 #endif
     return 0;
 }
@@ -708,6 +786,61 @@ void pin_all_threads(std::uint32_t num_threads) {
     for (std::uint32_t i = 0; i < num_threads; ++i) {
         pin_thread_to_core(i);
     }
+}
+
+// ============================================================
+// HugePages Allocation
+// ============================================================
+
+void* allocate_huge_pages(std::size_t size_bytes) {
+#if defined(__linux__)
+    // Round up to 2MB boundary
+    constexpr std::size_t kHugePageSize = 2 * 1024 * 1024;
+    std::size_t aligned = (size_bytes + kHugePageSize - 1) & ~(kHugePageSize - 1);
+    
+    // Tentativa 1: MAP_HUGETLB (requer hugepages pré-alocadas no kernel)
+    void* ptr = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (ptr != MAP_FAILED) return ptr;
+    
+    // Tentativa 2: mmap normal + madvise HUGEPAGE hint (Transparent Huge Pages)
+    ptr = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr != MAP_FAILED) {
+        madvise(ptr, aligned, MADV_HUGEPAGE);
+        return ptr;
+    }
+    
+    return nullptr;
+#elif defined(_WIN32)
+    // Tentativa 1: MEM_LARGE_PAGES (requer SeLockMemoryPrivilege)
+    void* ptr = VirtualAlloc(nullptr, size_bytes,
+                             MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE);
+    if (ptr) return ptr;
+    
+    // Tentativa 2: Alocação normal
+    ptr = VirtualAlloc(nullptr, size_bytes,
+                       MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    return ptr;
+#else
+    // Fallback: alocação alinhada padrão
+    return std::aligned_alloc(64, ((size_bytes + 63) & ~std::size_t(63)));
+#endif
+}
+
+void free_huge_pages(void* ptr, std::size_t size_bytes) {
+    if (!ptr) return;
+#if defined(__linux__)
+    constexpr std::size_t kHugePageSize = 2 * 1024 * 1024;
+    std::size_t aligned = (size_bytes + kHugePageSize - 1) & ~(kHugePageSize - 1);
+    munmap(ptr, aligned);
+#elif defined(_WIN32)
+    (void)size_bytes;
+    VirtualFree(ptr, 0, MEM_RELEASE);
+#else
+    (void)size_bytes;
+    std::free(ptr);
+#endif
 }
 
 }  // namespace bchaves::system

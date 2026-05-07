@@ -121,6 +121,7 @@ struct CommonOptions {
     bool benchmark = false;
     bool verbose = false;
     bool help = false;
+    std::uint64_t max_ram_mb = 0; // 0 = detectado automaticamente
 };
 
 struct AddressOptions : CommonOptions {

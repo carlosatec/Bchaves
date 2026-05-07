@@ -12,30 +12,38 @@
 #include "engine/app.hpp"
 #include "core/secp256k1.hpp"
 #include "core/hash.hpp"
-#include "core/cuckoo.hpp"
 #include "core/hash_table.hpp"
 #include "core/secp256k1_fleet.hpp"
 #include "system/checkpoint.hpp"
 #include <iostream>
+#include "core/adaptive_filter.hpp"
 #include <vector>
 #include <immintrin.h>
 #include <array>
 #include <thread>
 #include <atomic>
 #include <mutex>
-#include <unordered_map>
+#include "core/flat_map.hpp"
 #include <csignal>
 #include <fstream>
 #include <cstring>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <algorithm>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#endif
 #include <memory>
 
 namespace bchaves::engine {
 
 
-std::atomic<bool> g_stop_requested{false};
+alignas(64) std::atomic<bool> g_stop_requested{false};
 void handle_sig(int) { g_stop_requested = true; }
 
 // ============================================================
@@ -47,6 +55,44 @@ void handle_sig(int) { g_stop_requested = true; }
 struct KangarooTrap {
     bchaves::core::BigInt distance;
     bool is_wild;
+};
+
+// Zero-Copy Mmap Helper
+struct MappedFile {
+    void* data = nullptr;
+    size_t size = 0;
+
+    MappedFile() = default;
+    ~MappedFile() { unmap(); }
+
+    bool map(const std::string& path) {
+        unmap();
+#ifdef __linux__
+        int fd = open(path.c_str(), O_RDONLY);
+        if (fd < 0) return false;
+        struct stat st;
+        if (fstat(fd, &st) < 0 || st.st_size == 0) {
+            close(fd);
+            return false;
+        }
+        size = st.st_size;
+        data = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        return data != MAP_FAILED;
+#else
+        return false; // Fallback para outras plataformas não-linux (ex: native windows)
+#endif
+    }
+
+    void unmap() {
+#ifdef __linux__
+        if (data && data != MAP_FAILED) munmap(data, size);
+#endif
+        data = nullptr;
+        size = 0;
+    }
+
+    bool is_mapped() const { return data != nullptr && data != (void*)-1; }
 };
 
 struct TrapKey {
@@ -215,6 +261,27 @@ bool write_trap_header(std::ofstream& out,
     return out.good();
 }
 
+bool validate_trap_header_raw(const void* data, size_t size,
+                             const bchaves::core::BigInt& range_start,
+                             const bchaves::core::BigInt& range_end) {
+    if (size < 4 + 4 + 32 + 32) return false;
+    const uint8_t* ptr = static_cast<const uint8_t*>(data);
+    
+    uint32_t magic = *reinterpret_cast<const uint32_t*>(ptr);
+    uint32_t version = *reinterpret_cast<const uint32_t*>(ptr + 4);
+    
+    if (magic != TRAP_MAGIC || version != TRAP_VERSION) return false;
+    
+    // Verificar se o range é o mesmo
+    for (int i = 0; i < 4; ++i) {
+        uint64_t file_start_limb = *reinterpret_cast<const uint64_t*>(ptr + 8 + i * 8);
+        uint64_t file_end_limb = *reinterpret_cast<const uint64_t*>(ptr + 40 + i * 8);
+        if (file_start_limb != range_start.limbs[i]) return false;
+        if (file_end_limb != range_end.limbs[i]) return false;
+    }
+    return true;
+}
+
 bool validate_trap_header(std::ifstream& in,
                           const bchaves::core::BigInt& range_start,
                           const bchaves::core::BigInt& range_end) {
@@ -243,53 +310,46 @@ bool validate_trap_header(std::ifstream& in,
 // ============================================================
 
 uint64_t load_traps_from_disk(std::vector<TrapShard>& shards,
-                              bchaves::core::CuckooFilter& filter,
+                              bchaves::core::AdaptiveCuckooFilter& filter,
                               const bchaves::core::BigInt& range_start,
                               const bchaves::core::BigInt& range_end,
                               const std::string& trap_dir) {
     uint64_t loaded = 0;
     std::error_code ec;
 
-
-
     if (!std::filesystem::exists(trap_dir, ec)) return 0;
 
     auto start_time = std::chrono::steady_clock::now();
-    std::cout << "[+] Cold Boot: Carregando armadilhas do disco...\n";
+    std::cout << "[+] Cold Boot: Carregando armadilhas do disco (Mmap Mode)...\n";
 
     for (int i = 0; i < 64; ++i) {
         std::string filename = trap_dir + "/shard_" + std::to_string(i) + ".bin";
-        std::ifstream in(filename, std::ios::binary);
-        if (!in.is_open()) continue;
+        MappedFile mf;
+        if (!mf.map(filename)) continue;
 
-        // Validar header
-        if (!validate_trap_header(in, range_start, range_end)) {
-            std::cerr << "[!] Arquivo " << filename
-                      << " tem range incompatível. Ignorando.\n";
-            continue;
-        }
+        if (!validate_trap_header_raw(mf.data, mf.size, range_start, range_end)) continue;
 
-        // Ler armadilhas
-        while (in.good() && !in.eof()) {
+        constexpr size_t HEADER_SIZE = 4 + 4 + 32 + 32;
+        constexpr size_t ENTRY_SIZE = 32 + 1 + 32 + 1;
+        
+        size_t num_entries = (mf.size - HEADER_SIZE) / ENTRY_SIZE;
+        const uint8_t* ptr = static_cast<const uint8_t*>(mf.data) + HEADER_SIZE;
+
+        for (size_t k = 0; k < num_entries; ++k) {
             TrapKey key;
             bchaves::core::BigInt distance;
-            uint8_t odd = 0;
-            uint8_t wild = 0;
+            std::memcpy(key.x.limbs.data(), ptr, 32);
+            key.odd = ptr[32] != 0;
+            std::memcpy(distance.limbs.data(), ptr + 33, 32);
+            bool wild = ptr[65] != 0;
+            ptr += ENTRY_SIZE;
 
-            in.read(reinterpret_cast<char*>(key.x.limbs.data()), 32);
-            in.read(reinterpret_cast<char*>(&odd), 1);
-            in.read(reinterpret_cast<char*>(distance.limbs.data()), 32);
-            in.read(reinterpret_cast<char*>(&wild), 1);
-
-            if (!in.good()) break;
-
-            key.odd = odd != 0;
             const uint64_t hash = trap_filter_hash(key);
             int shard_idx = hash % 64;
             auto& shard = shards[shard_idx];
             std::lock_guard<std::mutex> lock(shard.mtx);
-            if (!shard.table) shard.table = std::make_unique<bchaves::core::TrapTable>(1024); // Inicialização tardia se necessário
-            shard.table->insert(key.x, key.odd, distance, wild != 0);
+            if (!shard.table) shard.table = std::make_unique<bchaves::core::TrapTable>(1024);
+            shard.table->insert(key.x, key.odd, distance, wild);
             filter.insert(hash);
             ++loaded;
         }
@@ -315,41 +375,31 @@ bool lookup_trap_on_disk(const std::string& trap_dir,
                          const bchaves::core::BigInt& range_start,
                          const bchaves::core::BigInt& range_end) {
     std::string filename = trap_dir + "/shard_" + std::to_string(shard_idx) + ".bin";
-    std::ifstream in(filename, std::ios::binary);
-    if (!in.is_open()) return false;
-    if (!validate_trap_header(in, range_start, range_end)) return false;
+    MappedFile mf;
+    if (!mf.map(filename)) return false;
+    if (!validate_trap_header_raw(mf.data, mf.size, range_start, range_end)) return false;
 
-    // Busca binária no arquivo de shard ordenado
-    in.seekg(0, std::ios::end);
-    std::streamoff file_size = in.tellg();
+    constexpr size_t HEADER_SIZE = 4 + 4 + 32 + 32;
+    constexpr size_t ENTRY_SIZE = 32 + 1 + 32 + 1;
     
-    constexpr size_t HEADER_SIZE = 4 + 4 + 32 + 32; // Magic + Version + Start + End
-    constexpr size_t ENTRY_SIZE = 32 + 1 + 32 + 1; // X + Odd + Dist + Wild
+    if (mf.size < HEADER_SIZE + ENTRY_SIZE) return false;
     
-    if (file_size < static_cast<std::streamoff>(HEADER_SIZE + ENTRY_SIZE)) return false;
-    
-    uint64_t num_entries = (static_cast<uint64_t>(file_size) - HEADER_SIZE) / ENTRY_SIZE;
+    uint64_t num_entries = (mf.size - HEADER_SIZE) / ENTRY_SIZE;
     uint64_t low = 0;
     uint64_t high = num_entries - 1;
+    const uint8_t* base = static_cast<const uint8_t*>(mf.data) + HEADER_SIZE;
     
     while (low <= high) {
         uint64_t mid = low + (high - low) / 2;
-        in.seekg(HEADER_SIZE + mid * ENTRY_SIZE, std::ios::beg);
+        const uint8_t* ptr = base + mid * ENTRY_SIZE;
         
         TrapKey key;
-        bchaves::core::BigInt distance;
-        uint8_t odd = 0;
-        uint8_t wild = 0;
-        
-        in.read(reinterpret_cast<char*>(key.x.limbs.data()), 32);
-        in.read(reinterpret_cast<char*>(&odd), 1);
-        in.read(reinterpret_cast<char*>(distance.limbs.data()), 32);
-        in.read(reinterpret_cast<char*>(&wild), 1);
-        
-        key.odd = odd != 0;
+        std::memcpy(key.x.limbs.data(), ptr, 32);
+        key.odd = ptr[32] != 0;
         
         if (key == target_key) {
-            out_trap = {distance, wild != 0};
+            std::memcpy(out_trap.distance.limbs.data(), ptr + 33, 32);
+            out_trap.is_wild = ptr[65] != 0;
             return true;
         }
         
@@ -360,6 +410,7 @@ bool lookup_trap_on_disk(const std::string& trap_dir,
             high = mid - 1;
         }
     }
+    
     return false;
 }
 
@@ -380,7 +431,7 @@ void dump_shards_to_disk(const std::string& trap_dir,
         std::string filename = trap_dir + "/shard_" + std::to_string(i) + ".bin";
 
         // Merge: carregar traps existentes do disco, adicionar as da RAM, reescrever tudo.
-        std::unordered_map<TrapKey, KangarooTrap, TrapKeyHasher> merged;
+        bchaves::core::FlatHashMap<TrapKey, KangarooTrap, TrapKeyHasher> merged;
 
         // 1. Carregar dados existentes do disco
         {
@@ -419,7 +470,10 @@ void dump_shards_to_disk(const std::string& trap_dir,
         // 3. Ordenar chaves para permitir busca binária no disco
         std::vector<TrapKey> sorted_keys;
         sorted_keys.reserve(merged.size());
-        for (auto const& [key, _] : merged) sorted_keys.push_back(key);
+        for (auto it = merged.begin(); it != merged.end(); ++it) {
+            auto [key, _] = *it;
+            sorted_keys.push_back(key);
+        }
         std::sort(sorted_keys.begin(), sorted_keys.end());
 
         // 4. Reescrever o arquivo completo com o merge ordenado
@@ -428,7 +482,8 @@ void dump_shards_to_disk(const std::string& trap_dir,
 
         write_trap_header(out, range_start, range_end);
         for (const auto& key : sorted_keys) {
-            const auto& trap = merged[key];
+            const auto* trap_ptr = merged.find(key);
+            const auto& trap = *trap_ptr;
             out.write(reinterpret_cast<const char*>(key.x.limbs.data()), 32);
             uint8_t odd = key.odd ? 1 : 0;
             out.write(reinterpret_cast<const char*>(&odd), 1);
@@ -472,9 +527,11 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     std::cout << "[+] Iniciando Kangaroo (Ultra-RAM Fleet Model)\n";
     
     bchaves::core::BigInt range_start, range_end;
+    std::optional<std::uint32_t> range_bits;
     if (options.range.find("bits:") == 0) {
         uint32_t bits = std::stoul(options.range.substr(5));
         std::cout << "[*] Modo Bits Detectado: " << bits << "\n";
+        range_bits = bits;
         range_start = bchaves::core::BigInt(1) << (bits - 1);
         range_end = (bchaves::core::BigInt(1) << bits) - bchaves::core::BigInt(1);
     } else {
@@ -507,24 +564,38 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     // Configuração de Memória e Filtro
     // ============================================================
     auto hw = bchaves::system::detect_hardware();
-    uint64_t max_traps = (hw.ram_available * 8) / 10 / sizeof(bchaves::core::TrapEntry); // 80% da RAM real
+    uint64_t effective_ram = hw.ram_available;
+    if (options.max_ram_mb > 0) {
+        effective_ram = options.max_ram_mb * 1024ULL * 1024ULL;
+        std::cout << "[*] Limite de RAM forçado pelo usuario: " << options.max_ram_mb << " MB\n";
+    }
+
+    uint64_t max_traps = (effective_ram * 8) / 10 / sizeof(bchaves::core::TrapEntry); // 80% da RAM real
     if (max_traps < 100000) max_traps = 100000;
 
     // Cuckoo Filter dimensionado para o total esperado (RAM + Disco).
-    // O filtro NUNCA é limpo, pois ele representa o universo completo de armadilhas
-    // que existem em RAM + Disco combinados. 
     // Usamos ~10% da RAM livre para o filtro. Cada slot usa ~2 bytes (16-bit tag).
-    uint64_t filter_cap = std::max((uint64_t)100000000ULL, (uint64_t)((hw.ram_available / 10) / 2));
-    auto trap_filter = std::make_unique<bchaves::core::CuckooFilter>(filter_cap);
+    uint64_t filter_cap = std::max((uint64_t)100000000ULL, (uint64_t)((effective_ram / 10) / 2));
+    auto trap_filter = std::make_unique<bchaves::core::AdaptiveCuckooFilter>(filter_cap, hw);
 
-    std::cout << "[+] Limite de RAM: " << (hw.ram_available / 1024 / 1024) << " MB\n";
+    std::cout << "[+] Limite de RAM: " << (effective_ram / 1024 / 1024) << " MB\n";
     std::cout << "[+] Capacidade do Filtro: " << filter_cap / 1000000 << "M entradas\n";
-    std::cout << "[+] Limite de Armadilhas em RAM: " << max_traps << "\n";
+
+    // Cálculo conservador para evitar over-allocation devido ao rounding power-of-2
+    // Cada shard arredonda pra cima. Precisamos que (64 * rounded_shard_cap * entry_size) <= target_ram
+    uint64_t target_ram_for_tables = (effective_ram * 7) / 10; // 70% da RAM para tabelas
+    uint64_t max_entries_per_shard = target_ram_for_tables / 64 / sizeof(bchaves::core::TrapEntry);
+    
+    // Achar a maior potência de 2 que cabe
+    uint64_t shard_cap_pow2 = 1;
+    while (shard_cap_pow2 * 2 <= max_entries_per_shard) shard_cap_pow2 <<= 1;
+    
+    uint64_t total_max_traps = shard_cap_pow2 * 64;
+    std::cout << "[+] Limite de Armadilhas em RAM: " << total_max_traps << " (64 shards de " << shard_cap_pow2 << ")\n";
 
     std::vector<TrapShard> shards(64);
     for(int i=0; i<64; ++i) {
-        // Alocar capacidade proporcional à RAM
-        shards[i].table = std::make_unique<bchaves::core::TrapTable>(max_traps / 64);
+        shards[i].table = std::make_unique<bchaves::core::TrapTable>(shard_cap_pow2);
     }
     std::atomic<uint64_t> total_hops{0};
     std::atomic<uint64_t> total_traps_in_ram{0};
@@ -552,7 +623,8 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     auto tune = bchaves::system::tune_for(hardware, options.auto_tune, options.threads);
     std::uint32_t num_threads = tune.threads;
     const std::filesystem::path checkpoint_path = options.checkpoint_path.value_or(
-        bchaves::system::default_checkpoint_path("kangaroo"));
+        bchaves::system::default_checkpoint_path("kangaroo", range_bits));
+    std::cout << "[+] Checkpoint: " << checkpoint_path.string() << "\n";
     std::cout << "[+] Perfil: " << bchaves::system::to_string(options.auto_tune) << " | Threads: " << num_threads << '\n';
 
     std::vector<std::unique_ptr<KangarooWorkerState>> worker_states;
@@ -638,47 +710,72 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
         while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
             // 1. Fase de Saltos (Vetorizada via SoA)
             for (size_t i = 0; i < kFleetSize; i += lanes) {
-                // Selecionar o primeiro ponto do sub-lote para determinar o salto (heurística simplificada para SIMD)
-                // Para máxima performance, idealmente todos os lanes usariam o mesmo jump se possível, 
-                // mas para manter a corretude matemática, processamos os lanes.
+                // Selecionar o salto baseado no primeiro lane do sub-lote
+                // (Heurística: todos os lanes do sub-lote usam o mesmo salto para permitir SIMD)
+                uint32_t jump_idx = local_fleet.x[0][i] % 64;
+                const auto& jump = g_jump_table[jump_idx];
+                
+                // 1.1 Atualizar distâncias para TODO o sub-lote
                 for (size_t l = 0; l < lanes; ++l) {
-                    uint32_t jump_idx = local_fleet.x[0][i+l] % 64;
-                    const auto& jump = g_jump_table[jump_idx];
-                    
-                    // Adicionar distância
                     bchaves::core::BigInt dist_i;
                     for(int limb=0; limb<4; ++limb) dist_i.limbs[limb] = local_fleet.d[limb][i+l];
                     dist_i += jump.distance;
                     for(int limb=0; limb<4; ++limb) local_fleet.d[limb][i+l] = dist_i.limbs[limb];
-                    
-                    // Aqui chamamos o kernel SIMD específico (ex: 1 ponto de salto adicionado a 2 ou 4 cangurus)
-                    // Nota: Em implementações de produção, a jump table também pode ser vetorizada.
-                    if (lanes == 4) {
-                        #if defined(__AVX2__)
-                        bchaves::core::fleet::add_fleet_avx2(local_fleet, i, jump.point);
-                        i += 3; // Pula os outros lanes já processados pelo kernel AVX2
-                        break;
-                        #endif
-                    } else if (lanes == 2) {
-                        #if defined(__SSE4_1__)
-                        bchaves::core::fleet::add_fleet_sse4(local_fleet, i, jump.point);
-                        i += 1;
-                        break;
-                        #endif
-                    } else {
-                        // Escalar
+                }
+                
+                // 1.2 Kernel de Adição de Pontos (SIMD ou Escalar)
+                if (lanes == 4) {
+                    #if defined(__AVX2__)
+                    bchaves::core::fleet::add_fleet_avx2(local_fleet, i, jump.point);
+                    #else
+                    // Fallback escalar se compilado sem AVX2 mas lanes detectado (não deve ocorrer)
+                    for (size_t l = 0; l < 4; ++l) {
                         bchaves::core::PointJacobian p_jac;
                         for(int limb=0; limb<4; ++limb) {
-                            p_jac.x.limbs[limb] = local_fleet.x[limb][i];
-                            p_jac.y.limbs[limb] = local_fleet.y[limb][i];
-                            p_jac.z.limbs[limb] = local_fleet.z[limb][i];
+                            p_jac.x.limbs[limb] = local_fleet.x[limb][i+l];
+                            p_jac.y.limbs[limb] = local_fleet.y[limb][i+l];
+                            p_jac.z.limbs[limb] = local_fleet.z[limb][i+l];
                         }
                         p_jac = bchaves::core::add_points_mixed(p_jac, jump.point);
                         for(int limb=0; limb<4; ++limb) {
-                            local_fleet.x[limb][i] = p_jac.x.limbs[limb];
-                            local_fleet.y[limb][i] = p_jac.y.limbs[limb];
-                            local_fleet.z[limb][i] = p_jac.z.limbs[limb];
+                            local_fleet.x[limb][i+l] = p_jac.x.limbs[limb];
+                            local_fleet.y[limb][i+l] = p_jac.y.limbs[limb];
+                            local_fleet.z[limb][i+l] = p_jac.z.limbs[limb];
                         }
+                    }
+                    #endif
+                } else if (lanes == 2) {
+                    #if defined(__SSE4_1__)
+                    bchaves::core::fleet::add_fleet_sse4(local_fleet, i, jump.point);
+                    #else
+                    for (size_t l = 0; l < 2; ++l) {
+                        bchaves::core::PointJacobian p_jac;
+                        for(int limb=0; limb<4; ++limb) {
+                            p_jac.x.limbs[limb] = local_fleet.x[limb][i+l];
+                            p_jac.y.limbs[limb] = local_fleet.y[limb][i+l];
+                            p_jac.z.limbs[limb] = local_fleet.z[limb][i+l];
+                        }
+                        p_jac = bchaves::core::add_points_mixed(p_jac, jump.point);
+                        for(int limb=0; limb<4; ++limb) {
+                            local_fleet.x[limb][i+l] = p_jac.x.limbs[limb];
+                            local_fleet.y[limb][i+l] = p_jac.y.limbs[limb];
+                            local_fleet.z[limb][i+l] = p_jac.z.limbs[limb];
+                        }
+                    }
+                    #endif
+                } else {
+                    // Escalar (lanes == 1)
+                    bchaves::core::PointJacobian p_jac;
+                    for(int limb=0; limb<4; ++limb) {
+                        p_jac.x.limbs[limb] = local_fleet.x[limb][i];
+                        p_jac.y.limbs[limb] = local_fleet.y[limb][i];
+                        p_jac.z.limbs[limb] = local_fleet.z[limb][i];
+                    }
+                    p_jac = bchaves::core::add_points_mixed(p_jac, jump.point);
+                    for(int limb=0; limb<4; ++limb) {
+                        local_fleet.x[limb][i] = p_jac.x.limbs[limb];
+                        local_fleet.y[limb][i] = p_jac.y.limbs[limb];
+                        local_fleet.z[limb][i] = p_jac.z.limbs[limb];
                     }
                 }
             }
@@ -687,67 +784,99 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             bchaves::core::fleet::batch_normalize_fleet(local_fleet);
             total_hops.fetch_add(kFleetSize, std::memory_order_relaxed);
 
-            // 3. Verificação de Distinguished Points e Armadilhas
-            for (size_t i = 0; i < kFleetSize; ++i) {
-                // Bits de distinção (ex: 16 bits zero no final de X)
-                if ((local_fleet.x[0][i] & 0xFFFFULL) == 0) {
-                    TrapKey key;
-                    for(int l=0; l<4; ++l) key.x.limbs[l] = local_fleet.x[l][i];
-                    key.odd = (local_fleet.y[0][i] & 1);
+            // 3. Verificação de Distinguished Points e Armadilhas (SIMD Masking)
+            //    Macro para o processamento individual de um DP encontrado na posição idx
+            #define PROCESS_DISTINGUISHED_POINT(idx) do { \
+                TrapKey key; \
+                for(int l=0; l<4; ++l) key.x.limbs[l] = local_fleet.x[l][idx]; \
+                key.odd = (local_fleet.y[0][idx] & 1); \
+                uint64_t h = trap_filter_hash(key); \
+                if (trap_filter->lookup(h)) { \
+                    int shard_idx = h % 64; \
+                    auto& shard = shards[shard_idx]; \
+                    std::lock_guard<std::mutex> lock(shard.mtx); \
+                    KangarooTrap other; \
+                    if (shard.table->lookup(key.x, key.odd, other.distance, other.is_wild)) { \
+                        if (other.is_wild != local_fleet.is_wild[idx]) { \
+                            bchaves::core::BigInt dist_i; \
+                            for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
+                            bchaves::core::BigInt candidate; \
+                            if (local_fleet.is_wild[idx]) { \
+                                candidate = range_end + other.distance - dist_i; \
+                            } else { \
+                                candidate = range_end + dist_i - other.distance; \
+                            } \
+                            if (candidate_matches_target(candidate, target_y)) { \
+                                std::lock_guard<std::mutex> slock(sol_mtx); \
+                                solution = candidate; \
+                                found = true; \
+                                return; \
+                            } \
+                        } \
+                    } else { \
+                        bchaves::core::BigInt dist_i; \
+                        for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
+                        shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[idx]); \
+                        total_traps_in_ram.fetch_add(1, std::memory_order_relaxed); \
+                    } \
+                } else { \
+                    trap_filter->insert(h); \
+                    int shard_idx = h % 64; \
+                    auto& shard = shards[shard_idx]; \
+                    std::lock_guard<std::mutex> lock(shard.mtx); \
+                    bchaves::core::BigInt dist_i; \
+                    for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
+                    shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[idx]); \
+                    total_traps_in_ram.fetch_add(1, std::memory_order_relaxed); \
+                } \
+            } while(0)
 
-                    uint64_t h = trap_filter_hash(key);
-                    if (trap_filter->lookup(h)) {
-                        int shard_idx = h % 64;
-                        auto& shard = shards[shard_idx];
-                        std::lock_guard<std::mutex> lock(shard.mtx);
-                        
-                        KangarooTrap other;
-                        if (shard.table->lookup(key.x, key.odd, other.distance, other.is_wild)) {
-                            if (other.is_wild != local_fleet.is_wild[i]) {
-                                // Colisão encontrada!
-                                bchaves::core::BigInt dist_i;
-                                for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
-                                
-                                bchaves::core::BigInt candidate;
-                                if (local_fleet.is_wild[i]) {
-                                    candidate = range_end + other.distance - dist_i;
-                                } else {
-                                    candidate = range_end + dist_i - other.distance;
-                                }
-
-                                bchaves::core::Secp256k1Point target_p;
-                                for(int l=0; l<4; ++l) {
-                                    target_p.x.limbs[l] = local_fleet.x[l][i];
-                                    target_p.y.limbs[l] = local_fleet.y[l][i];
-                                }
-                                
-                                if (candidate_matches_target(candidate, target_y)) {
-                                    std::lock_guard<std::mutex> slock(sol_mtx);
-                                    solution = candidate;
-                                    found = true;
-                                    return;
-                                }
-                            }
-                        } else {
-                            // Inserir nova armadilha
-                            bchaves::core::BigInt dist_i;
-                            for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
-                            shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[i]);
-                            total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
-                        }
-                    } else {
-                        // Adicionar ao filtro e à tabela
-                        trap_filter->insert(h);
-                        int shard_idx = h % 64;
-                        auto& shard = shards[shard_idx];
-                        std::lock_guard<std::mutex> lock(shard.mtx);
-                        bchaves::core::BigInt dist_i;
-                        for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][i];
-                        shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[i]);
-                        total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
+#if defined(__AVX512F__)
+            {
+                const __m512i mask16 = _mm512_set1_epi64(0xFFFFULL);
+                const __m512i zero = _mm512_setzero_si512();
+                for (size_t i = 0; i < kFleetSize; i += 8) {
+                    __m512i x0 = _mm512_loadu_si512(&local_fleet.x[0][i]);
+                    __m512i masked = _mm512_and_si512(x0, mask16);
+                    __mmask8 hits = _mm512_cmpeq_epi64_mask(masked, zero);
+                    if (hits == 0) continue; // Fast path: nenhum DP neste bloco de 8
+                    // Slow path: extrair posições dos bits ativos
+                    while (hits) {
+                        int bit = __builtin_ctz(hits);
+                        size_t idx = i + bit;
+                        PROCESS_DISTINGUISHED_POINT(idx);
+                        hits &= hits - 1;
                     }
                 }
             }
+#elif defined(__AVX2__)
+            {
+                const __m256i mask16 = _mm256_set1_epi64x(0xFFFFULL);
+                const __m256i zero = _mm256_setzero_si256();
+                for (size_t i = 0; i < kFleetSize; i += 4) {
+                    __m256i x0 = _mm256_loadu_si256((__m256i*)&local_fleet.x[0][i]);
+                    __m256i masked = _mm256_and_si256(x0, mask16);
+                    __m256i cmp = _mm256_cmpeq_epi64(masked, zero);
+                    int movmask = _mm256_movemask_epi8(cmp);
+                    if (movmask == 0) continue; // Fast path: nenhum DP neste bloco de 4
+                    // Slow path: extrair posições dos bits ativos
+                    for (int lane = 0; lane < 4; ++lane) {
+                        if (movmask & (0xFF << (lane * 8))) {
+                            size_t idx = i + lane;
+                            PROCESS_DISTINGUISHED_POINT(idx);
+                        }
+                    }
+                }
+            }
+#else
+            // Fallback escalar
+            for (size_t i = 0; i < kFleetSize; ++i) {
+                if ((local_fleet.x[0][i] & 0xFFFFULL) == 0) {
+                    PROCESS_DISTINGUISHED_POINT(i);
+                }
+            }
+#endif
+            #undef PROCESS_DISTINGUISHED_POINT
             
             // Sincronizar periodicamente com o estado global para checkpoints
             if (total_hops.load() % (kFleetSize * 100) == 0) {

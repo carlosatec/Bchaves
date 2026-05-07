@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cstdlib>
 #include "core/secp256k1.hpp"
+#include "system/hardware.hpp"
 
 namespace bchaves::core {
 
@@ -29,20 +30,39 @@ public:
         m_capacity = 1;
         while (m_capacity < capacity) m_capacity <<= 1;
         m_mask = m_capacity - 1;
+        
+        m_alloc_size = (m_capacity * sizeof(TrapEntry)) + 64;
+        m_entries = (TrapEntry*)bchaves::system::allocate_huge_pages(m_alloc_size);
+        
+        if (!m_entries) {
+            // Fallback para alocação convencional
 #if defined(_WIN32)
-        m_entries = (TrapEntry*)_aligned_malloc(m_capacity * sizeof(TrapEntry), 64);
+            m_entries = (TrapEntry*)_aligned_malloc(m_alloc_size, 64);
 #else
-        m_entries = (TrapEntry*)aligned_alloc(64, m_capacity * sizeof(TrapEntry));
+            m_entries = (TrapEntry*)aligned_alloc(64, m_alloc_size);
 #endif
-        std::memset(m_entries, 0, m_capacity * sizeof(TrapEntry));
+            m_use_huge_pages = false;
+        } else {
+            m_use_huge_pages = true;
+        }
+        
+        if (m_entries) {
+            std::memset(m_entries, 0, m_alloc_size);
+        }
     }
 
     ~TrapTable() {
+        if (m_entries) {
+            if (m_use_huge_pages) {
+                bchaves::system::free_huge_pages(m_entries, m_alloc_size);
+            } else {
 #if defined(_WIN32)
-        if (m_entries) _aligned_free(m_entries);
+                _aligned_free(m_entries);
 #else
-        if (m_entries) free(m_entries);
+                free(m_entries);
 #endif
+            }
+        }
     }
 
     bool insert(const BigInt& x, bool x_odd, const BigInt& dist, bool is_wild) {
@@ -91,6 +111,8 @@ private:
     TrapEntry* m_entries;
     size_t m_capacity;
     size_t m_mask;
+    size_t m_alloc_size = 0;
+    bool m_use_huge_pages = false;
 };
 
 } // namespace bchaves::core
