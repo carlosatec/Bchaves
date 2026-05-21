@@ -602,6 +602,7 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
     std::atomic<bool> found{false};
     bchaves::core::BigInt solution;
     std::mutex sol_mtx;
+    std::mutex filter_mtx;
 
 
 
@@ -707,6 +708,74 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
 
         const size_t lanes = bchaves::core::fleet::get_dispatcher().lanes;
 
+        struct PendingDp {
+            TrapKey key;
+            bchaves::core::BigInt distance;
+            bool is_wild = false;
+            bool filter_maybe_present = false;
+        };
+
+        std::array<PendingDp, 64> local_dps{};
+        std::size_t local_dp_count = 0;
+
+        auto sync_local_fleet = [&]() {
+            std::lock_guard<std::mutex> state_lock(worker_state.mutex);
+            for(int l=0; l<4; ++l) {
+                std::memcpy(worker_state.fleet.x[l].data(), local_fleet.x[l].data(), kFleetSize * 8);
+                std::memcpy(worker_state.fleet.y[l].data(), local_fleet.y[l].data(), kFleetSize * 8);
+                std::memcpy(worker_state.fleet.z[l].data(), local_fleet.z[l].data(), kFleetSize * 8);
+                std::memcpy(worker_state.fleet.d[l].data(), local_fleet.d[l].data(), kFleetSize * 8);
+            }
+        };
+
+        auto flush_local_dps = [&]() {
+            if (local_dp_count == 0) return;
+
+            {
+                std::lock_guard<std::mutex> filter_lock(filter_mtx);
+                for (std::size_t n = 0; n < local_dp_count; ++n) {
+                    const uint64_t h = trap_filter_hash(local_dps[n].key);
+                    local_dps[n].filter_maybe_present = trap_filter->lookup(h);
+                    if (!local_dps[n].filter_maybe_present) {
+                        trap_filter->insert(h);
+                    }
+                }
+            }
+
+            for (std::size_t n = 0; n < local_dp_count; ++n) {
+                const uint64_t h = trap_filter_hash(local_dps[n].key);
+                auto& shard = shards[h % 64];
+                std::lock_guard<std::mutex> lock(shard.mtx);
+
+                KangarooTrap other;
+                if (shard.table->lookup(local_dps[n].key.x, local_dps[n].key.odd, other.distance, other.is_wild)) {
+                    if (other.is_wild != local_dps[n].is_wild) {
+                        bchaves::core::BigInt candidate;
+                        if (local_dps[n].is_wild) {
+                            candidate = range_end + other.distance - local_dps[n].distance;
+                        } else {
+                            candidate = range_end + local_dps[n].distance - other.distance;
+                        }
+                        if (candidate_matches_target(candidate, target_y)) {
+                            std::lock_guard<std::mutex> slock(sol_mtx);
+                            solution = candidate;
+                            found = true;
+                            local_dp_count = 0;
+                            return;
+                        }
+                    }
+                } else {
+                    shard.table->insert(local_dps[n].key.x,
+                                        local_dps[n].key.odd,
+                                        local_dps[n].distance,
+                                        local_dps[n].is_wild);
+                    total_traps_in_ram.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+
+            local_dp_count = 0;
+        };
+
         while(!g_stop_requested && !found.load(std::memory_order_relaxed)) {
             // 1. Fase de Saltos (Vetorizada via SoA)
             for (size_t i = 0; i < kFleetSize; i += lanes) {
@@ -787,48 +856,15 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             // 3. Verificação de Distinguished Points e Armadilhas (SIMD Masking)
             //    Macro para o processamento individual de um DP encontrado na posição idx
             #define PROCESS_DISTINGUISHED_POINT(idx) do { \
-                TrapKey key; \
-                for(int l=0; l<4; ++l) key.x.limbs[l] = local_fleet.x[l][idx]; \
-                key.odd = (local_fleet.y[0][idx] & 1); \
-                uint64_t h = trap_filter_hash(key); \
-                if (trap_filter->lookup(h)) { \
-                    int shard_idx = h % 64; \
-                    auto& shard = shards[shard_idx]; \
-                    std::lock_guard<std::mutex> lock(shard.mtx); \
-                    KangarooTrap other; \
-                    if (shard.table->lookup(key.x, key.odd, other.distance, other.is_wild)) { \
-                        if (other.is_wild != local_fleet.is_wild[idx]) { \
-                            bchaves::core::BigInt dist_i; \
-                            for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
-                            bchaves::core::BigInt candidate; \
-                            if (local_fleet.is_wild[idx]) { \
-                                candidate = range_end + other.distance - dist_i; \
-                            } else { \
-                                candidate = range_end + dist_i - other.distance; \
-                            } \
-                            if (candidate_matches_target(candidate, target_y)) { \
-                                std::lock_guard<std::mutex> slock(sol_mtx); \
-                                solution = candidate; \
-                                found = true; \
-                                return; \
-                            } \
-                        } \
-                    } else { \
-                        bchaves::core::BigInt dist_i; \
-                        for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
-                        shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[idx]); \
-                        total_traps_in_ram.fetch_add(1, std::memory_order_relaxed); \
-                    } \
-                } else { \
-                    trap_filter->insert(h); \
-                    int shard_idx = h % 64; \
-                    auto& shard = shards[shard_idx]; \
-                    std::lock_guard<std::mutex> lock(shard.mtx); \
-                    bchaves::core::BigInt dist_i; \
-                    for(int l=0; l<4; ++l) dist_i.limbs[l] = local_fleet.d[l][idx]; \
-                    shard.table->insert(key.x, key.odd, dist_i, local_fleet.is_wild[idx]); \
-                    total_traps_in_ram.fetch_add(1, std::memory_order_relaxed); \
+                PendingDp& dp = local_dps[local_dp_count++]; \
+                for(int l=0; l<4; ++l) { \
+                    dp.key.x.limbs[l] = local_fleet.x[l][idx]; \
+                    dp.distance.limbs[l] = local_fleet.d[l][idx]; \
                 } \
+                dp.key.odd = (local_fleet.y[0][idx] & 1); \
+                dp.is_wild = local_fleet.is_wild[idx]; \
+                dp.filter_maybe_present = false; \
+                if (local_dp_count == local_dps.size()) flush_local_dps(); \
             } while(0)
 
 #if defined(__AVX512F__)
@@ -877,18 +913,16 @@ int run_kangaroo(const bchaves::system::KangarooOptions& options) {
             }
 #endif
             #undef PROCESS_DISTINGUISHED_POINT
+            flush_local_dps();
             
             // Sincronizar periodicamente com o estado global para checkpoints
             if (total_hops.load() % (kFleetSize * 100) == 0) {
-                std::lock_guard<std::mutex> state_lock(worker_state.mutex);
-                for(int l=0; l<4; ++l) {
-                    std::memcpy(worker_state.fleet.x[l].data(), local_fleet.x[l].data(), kFleetSize * 8);
-                    std::memcpy(worker_state.fleet.y[l].data(), local_fleet.y[l].data(), kFleetSize * 8);
-                    std::memcpy(worker_state.fleet.z[l].data(), local_fleet.z[l].data(), kFleetSize * 8);
-                    std::memcpy(worker_state.fleet.d[l].data(), local_fleet.d[l].data(), kFleetSize * 8);
-                }
+                sync_local_fleet();
             }
         }
+
+        flush_local_dps();
+        sync_local_fleet();
     };
 
     std::vector<std::thread> threads;

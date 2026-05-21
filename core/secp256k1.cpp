@@ -595,7 +595,7 @@ const BigInt kGeneratorY = parse_hex("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A6
 // GLV Constants
 const BigInt kGLV_Beta = parse_hex("7AE96A2B657C07106E64479EAC3434E99CF0497512F58995C1396C28719501EE");
 const BigInt kGLV_Beta2 = parse_hex("851695D49A83F8EF919BB86153CBCB16630FB68AED0A766A3EC693D68E6AFA40");
-const BigInt kGLV_Lambda = parse_hex("5363AD4CC05C30E0A5261C028812645A122E22EA2081667870F197FBF390947");
+const BigInt kGLV_Lambda = parse_hex("5363AD4CC05C30E0A5261C028812645A122E22EA20816678DF02967C1B23BD72");
 const BigInt kGLV_Lambda2 = parse_hex("AC9C52B33FA3CF1F5AD9E3FD77ED9BA4A880B9FC8EC739C2E0CFC810B51283CE");
 
 std::string to_hex(const std::vector<std::uint8_t>& data) {
@@ -852,14 +852,6 @@ std::size_t serialize_pubkey(const Secp256k1Point& point, bool compressed, std::
 
 // Removido - movido para o namespace público acima
 
-std::string to_lower(const std::string& text) {
-    std::string out = text;
-    for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c += ('a' - 'A');
-    }
-    return out;
-}
-
 Secp256k1Point deserialize_pubkey(const std::uint8_t* data, std::size_t length) {
     if (length == 0) return {};
     if (data[0] == 0x04 && length == 65) {
@@ -923,29 +915,90 @@ Secp256k1Point multi_multiply_128(const Secp256k1Point& p1, const BigInt& s1, co
     return from_jacobian(res);
 }
 
+static void mul_256_by_128(const BigInt& k, const BigInt& b, std::uint64_t out[8]) {
+    std::fill(out, out + 8, 0ULL);
+    for (std::size_t i = 0; i < 4; ++i) {
+        unsigned __int128 carry = 0;
+        for (std::size_t j = 0; j < 2; ++j) {
+            unsigned __int128 prod = static_cast<unsigned __int128>(k.limbs[i]) * b.limbs[j] + out[i + j] + carry;
+            out[i + j] = static_cast<std::uint64_t>(prod);
+            carry = prod >> 64u;
+        }
+        std::size_t idx = i + 2;
+        while (carry > 0 && idx < 8) {
+            unsigned __int128 sum = static_cast<unsigned __int128>(out[idx]) + carry;
+            out[idx] = static_cast<std::uint64_t>(sum);
+            carry = sum >> 64u;
+            idx++;
+        }
+    }
+}
+
+static void add_256_to_wide(std::uint64_t wide[8], const BigInt& val) {
+    unsigned __int128 carry = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        unsigned __int128 sum = static_cast<unsigned __int128>(wide[i]) + val.limbs[i] + carry;
+        wide[i] = static_cast<std::uint64_t>(sum);
+        carry = sum >> 64u;
+    }
+    std::size_t idx = 4;
+    while (carry > 0 && idx < 8) {
+        unsigned __int128 sum = static_cast<unsigned __int128>(wide[idx]) + carry;
+        wide[idx] = static_cast<std::uint64_t>(sum);
+        carry = sum >> 64u;
+        idx++;
+    }
+}
+
+static BigInt divide_wide_by_256(const std::uint64_t wide[8], const BigInt& div) {
+    std::array<std::uint64_t, 5> rem{};
+    BigInt quote;
+    for (int bit = 511; bit >= 0; --bit) {
+        std::uint64_t carry = 0;
+        for (std::size_t limb = 0; limb < rem.size(); ++limb) {
+            const std::uint64_t next_carry = rem[limb] >> 63u;
+            rem[limb] = (rem[limb] << 1u) | carry;
+            carry = next_carry;
+        }
+        const std::size_t word = static_cast<std::size_t>(bit / 64);
+        const std::size_t shift = static_cast<std::size_t>(bit % 64);
+        rem[0] |= (wide[word] >> shift) & 1ULL;
+
+        if (compare_5_to_4(rem, div) >= 0) {
+            sub_5_by_4(rem, div);
+            const int bit_pos = bit;
+            if (bit_pos < 256) {
+                quote.limbs[static_cast<std::size_t>(bit_pos / 64)] |= (1ULL << (bit_pos % 64));
+            }
+        }
+    }
+    return quote;
+}
+
 void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& k2_neg) {
     static const BigInt n = kCurveOrder;
-    static const BigInt b11 = parse_hex("3086D221A7D46BC882C60D1B");
-    static const BigInt b21 = parse_hex("E79E57A8705B4A33830ACDC355AC8123");
-    // b12 = -b21, b22 = b11
+    static const BigInt half_n = n >> 1;
+    static const BigInt a1 = parse_hex("3086D221A7D46BCDE86C90E49284EB15");
+    static const BigInt b1_abs = parse_hex("E4437ED6010E88286F547FA90ABFE4C3");
+    static const BigInt a2 = parse_hex("114CA50F7A8E2F3F657C1108D9D44CFD8");
+    static const BigInt b2 = parse_hex("3086D221A7D46BCDE86C90E49284EB15");
 
-    // c1 = round(k * b11 / n)
-    // c2 = round(k * b21 / n)
-    // Usamos aproximação de 128 bits para o arredondamento
-    unsigned __int128 k_hi = ((unsigned __int128)k.limbs[3] << 64) | k.limbs[2];
-    unsigned __int128 n_hi = ((unsigned __int128)n.limbs[3] << 64) | n.limbs[2];
-    unsigned __int128 b11_val = ((unsigned __int128)b11.limbs[1] << 64) | b11.limbs[0];
-    unsigned __int128 b21_val = ((unsigned __int128)b21.limbs[1] << 64) | b21.limbs[0];
+    // c1 = round(k * b2 / n) = (k * b2 + half_n) / n
+    std::uint64_t wide_c1[8];
+    mul_256_by_128(k, b2, wide_c1);
+    add_256_to_wide(wide_c1, half_n);
+    BigInt c1 = divide_wide_by_256(wide_c1, n);
 
-    unsigned __int128 c1 = (k_hi * b11_val + (n_hi >> 1)) / n_hi;
-    unsigned __int128 c2 = (k_hi * b21_val + (n_hi >> 1)) / n_hi;
+    // c2 = round(k * b1_abs / n) = (k * b1_abs + half_n) / n
+    std::uint64_t wide_c2[8];
+    mul_256_by_128(k, b1_abs, wide_c2);
+    add_256_to_wide(wide_c2, half_n);
+    BigInt c2 = divide_wide_by_256(wide_c2, n);
 
-    // k1 = k - (c1*b11 + c2*b21)
-    // k2 = c1*b21 - c2*b11
-    BigInt term11 = BigInt((uint64_t)c1) * b11;
-    BigInt term21 = BigInt((uint64_t)c2) * b21;
+    // k1 = k - c1 * a1 - c2 * a2
+    BigInt term11 = c1 * a1;
+    BigInt term21 = c2 * a2;
     BigInt sum_k1 = term11 + term21;
-    
     if (k >= sum_k1) {
         k1 = k - sum_k1;
         k1_neg = false;
@@ -954,9 +1007,9 @@ void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& 
         k1_neg = true;
     }
 
-    BigInt term12 = BigInt((uint64_t)c1) * b21;
-    BigInt term22 = BigInt((uint64_t)c2) * b11;
-    
+    // k2 = - c1 * b1 - c2 * b2 = c1 * b1_abs - c2 * b2
+    BigInt term12 = c1 * b1_abs;
+    BigInt term22 = c2 * b2;
     if (term12 >= term22) {
         k2 = term12 - term22;
         k2_neg = false;
@@ -965,6 +1018,7 @@ void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& 
         k2_neg = true;
     }
 }
+
 
 Secp256k1Point secp256k1_multiply_glv(const BigInt& scalar) {
     if (scalar.is_zero()) return {};

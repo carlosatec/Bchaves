@@ -46,6 +46,8 @@ bool operator>=(const BigInt& lhs, const BigInt& rhs);
 BigInt operator+(const BigInt& lhs, const BigInt& rhs);
 BigInt operator-(const BigInt& lhs, const BigInt& rhs);
 BigInt operator*(const BigInt& lhs, const BigInt& rhs);
+BigInt operator%(const BigInt& lhs, const BigInt& rhs);
+BigInt operator/(const BigInt& lhs, const BigInt& rhs);
 BigInt operator<<(const BigInt& value, std::size_t shift);
 BigInt operator>>(const BigInt& value, std::size_t shift);
 BigInt& operator+=(BigInt& lhs, const BigInt& rhs);
@@ -116,6 +118,8 @@ Secp256k1Point deserialize_pubkey(const std::uint8_t* data, std::size_t length);
 
 Secp256k1Point secp256k1_add(const Secp256k1Point& a, const Secp256k1Point& b);
 Secp256k1Point secp256k1_multiply_glv(const BigInt& scalar);
+Secp256k1Point phi(const Secp256k1Point& p);
+void decompose_glv(const BigInt& k, BigInt& k1, BigInt& k2, bool& k1_neg, bool& k2_neg);
 
 // Performance / Batching API
 PointJacobian to_jacobian(const BigInt& x, const BigInt& y);
@@ -136,6 +140,5 @@ bool mul_small_in_place(BigInt& value, std::uint32_t multiplier);
 std::array<std::uint8_t, 32> to_bytes32(const BigInt& value);
 std::string to_hex(const std::vector<std::uint8_t>& data);
 
-std::string to_lower(const std::string& text); 
-
 }  // namespace bchaves::core
+
